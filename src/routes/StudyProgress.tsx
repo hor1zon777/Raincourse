@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Typography, Button, Tag, Progress, List, Spin, message } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { Card, Typography, Button, Tag, Progress, List, Spin, message, Popconfirm } from 'antd';
+import {
+  ArrowLeftOutlined,
+  PlayCircleOutlined,
+  CheckCircleOutlined,
+  StopOutlined,
+} from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { TaskUpdateEvent } from '../types';
@@ -22,6 +27,7 @@ export default function StudyProgress() {
   const navigate = useNavigate();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [running, setRunning] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
 
   useEffect(() => {
@@ -50,24 +56,47 @@ export default function StudyProgress() {
 
     const unlistenComplete = listen('study-complete', () => {
       setRunning(false);
+      setStopping(false);
       message.success('所有任务处理完毕');
+    });
+
+    const unlistenStopped = listen('study-stopped', () => {
+      setRunning(false);
+      setStopping(false);
+      message.warning('刷课已停止');
     });
 
     return () => {
       unlistenUpdate.then((fn) => fn());
       unlistenComplete.then((fn) => fn());
+      unlistenStopped.then((fn) => fn());
     };
   }, []);
 
   const startStudy = async () => {
     if (!id) return;
     setRunning(true);
+    setStopping(false);
     setTasks([]);
     try {
       await invoke('start_auto_study', { courseId: id });
     } catch (e) {
-      message.error(`启动失败: ${e}`);
+      if (!stopping) {
+        message.error(`启动失败: ${e}`);
+      }
       setRunning(false);
+      setStopping(false);
+    }
+  };
+
+  const stopStudy = async () => {
+    setStopping(true);
+    try {
+      await invoke('stop_auto_study');
+      message.info('正在停止刷课...');
+    } catch (e) {
+      message.error(`停止失败: ${e}`);
+      setStopping(false);
     }
   };
 
@@ -88,19 +117,37 @@ export default function StudyProgress() {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} disabled={running}>
           返回
         </Button>
         <Title level={4} style={{ margin: 0 }}>自动刷课</Title>
         <div style={{ flex: 1 }} />
-        <Button
-          type="primary"
-          icon={running ? <Spin size="small" /> : <PlayCircleOutlined />}
-          disabled={running}
-          onClick={startStudy}
-        >
-          {running ? '运行中...' : '开始刷课'}
-        </Button>
+        {running ? (
+          <Popconfirm
+            title="确定停止刷课？"
+            description="当前正在执行的任务会在完成当前步骤后停止"
+            onConfirm={stopStudy}
+            okText="确定停止"
+            cancelText="继续"
+            okButtonProps={{ danger: true }}
+          >
+            <Button
+              danger
+              icon={stopping ? <Spin size="small" /> : <StopOutlined />}
+              disabled={stopping}
+            >
+              {stopping ? '正在停止...' : '停止刷课'}
+            </Button>
+          </Popconfirm>
+        ) : (
+          <Button
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            onClick={startStudy}
+          >
+            开始刷课
+          </Button>
+        )}
       </div>
 
       {tasks.length > 0 && (
@@ -110,7 +157,7 @@ export default function StudyProgress() {
             <div style={{ flex: 1 }}>
               <Progress
                 percent={tasks.length > 0 ? Math.round((doneCount / tasks.length) * 100) : 0}
-                status={running ? 'active' : 'normal'}
+                status={stopping ? 'exception' : running ? 'active' : 'normal'}
               />
             </div>
             <Text type="secondary">

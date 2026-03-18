@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rand::Rng;
@@ -29,8 +31,22 @@ pub struct StudyTaskEvent {
     pub message: Option<String>,
 }
 
+/// 前端展示的章节任务项
+#[derive(Clone, Serialize)]
+pub struct ChapterTask {
+    pub index: usize,
+    pub id: i64,
+    pub name: String,
+    pub leaf_type: i32,
+    pub type_str: String,
+}
+
 fn emit_task(app: &AppHandle, evt: &StudyTaskEvent) {
     let _ = app.emit("study-task-update", evt.clone());
+}
+
+fn is_cancelled(cancel: &Arc<AtomicBool>) -> bool {
+    cancel.load(Ordering::Relaxed)
 }
 
 /// 构建心跳数据包
@@ -85,6 +101,7 @@ async fn handle_video(
     leaf_id: &str,
     name: &str,
     evt: &mut StudyTaskEvent,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), AppError> {
     evt.status = "running".into();
     evt.message = Some("获取视频信息...".into());
@@ -127,6 +144,13 @@ async fn handle_video(
     emit_task(app, evt);
 
     while rate < VIDEO_COMPLETION_THRESHOLD {
+        if is_cancelled(cancel) {
+            evt.status = "failed".into();
+            evt.message = Some("已被用户停止".into());
+            emit_task(app, evt);
+            return Err(AppError::General("用户停止".into()));
+        }
+
         let heartbeat = build_heartbeat(
             &cid, leaf_id, course_id, &sku_id, &user_id, video_frame,
         );
@@ -146,6 +170,13 @@ async fn handle_video(
                     }
                 }
             }
+        }
+
+        if is_cancelled(cancel) {
+            evt.status = "failed".into();
+            evt.message = Some("已被用户停止".into());
+            emit_task(app, evt);
+            return Err(AppError::General("用户停止".into()));
         }
 
         // 获取最新进度
@@ -192,7 +223,6 @@ async fn handle_announcement(
         .unwrap_or("")
         .to_string();
 
-    // 检查是否已完成
     let status = client.get_status(leaf_id, course_id).await?;
     if status["data"].as_bool() == Some(true) {
         evt.status = "done".into();
@@ -211,7 +241,7 @@ async fn handle_announcement(
     Ok(())
 }
 
-/// 处理 PPT 浏览任务（类型6在章节模式中出现的slide类型 leaf_type=0 视频之外可能也有）
+/// 处理 PPT 浏览任务
 async fn handle_ppt_leaf(
     app: &AppHandle,
     client: &RainClient,
@@ -231,7 +261,6 @@ async fn handle_ppt_leaf(
     let leaf_info = client.get_leaf_info(leaf_id, course_id, course_sign).await?;
     let user_id = leaf_info["data"]["user_id"].as_i64().unwrap_or(0);
 
-    // 尝试通过 PPT WebSocket 浏览
     let page_count = leaf_info["data"]
         .get("content_info")
         .and_then(|c| c.get("page_num"))
@@ -257,7 +286,7 @@ async fn handle_ppt_leaf(
 }
 
 /// 从章节数据中提取所有 leaf 任务
-fn extract_tasks(chapter_data: &Value) -> Vec<(i64, String, i32)> {
+pub fn extract_tasks(chapter_data: &Value) -> Vec<(i64, String, i32)> {
     let mut tasks = Vec::new();
     let empty = vec![];
     let chapters = chapter_data["data"]["course_chapter"]
@@ -277,7 +306,6 @@ fn extract_tasks(chapter_data: &Value) -> Vec<(i64, String, i32)> {
                     }
                 }
             } else {
-                // section 本身就是 leaf
                 let id = section["id"].as_i64().unwrap_or(0);
                 let name = section["name"].as_str().unwrap_or("未知任务").to_string();
                 let leaf_type = section["leaf_type"].as_i64().unwrap_or(-1) as i32;
@@ -290,7 +318,7 @@ fn extract_tasks(chapter_data: &Value) -> Vec<(i64, String, i32)> {
     tasks
 }
 
-fn leaf_type_str(t: i32) -> &'static str {
+pub fn leaf_type_str(t: i32) -> &'static str {
     match t {
         0 => "视频",
         3 => "公告",
@@ -300,12 +328,16 @@ fn leaf_type_str(t: i32) -> &'static str {
     }
 }
 
-/// 主入口：自动刷课
+/// 主入口：自动刷课（支持取消）
 pub async fn run_auto_study(
     app: AppHandle,
     client: RainClient,
     course_id: String,
+    cancel: Arc<AtomicBool>,
 ) -> Result<(), AppError> {
+    // 重置取消标志
+    cancel.store(false, Ordering::Relaxed);
+
     // 获取章节数据
     let sign_resp = client.get_course_sign(&course_id).await?;
     let course_sign = sign_resp["data"]["course_sign"]
@@ -318,6 +350,11 @@ pub async fn run_auto_study(
     let total = tasks.len();
 
     for (i, (leaf_id, name, leaf_type)) in tasks.iter().enumerate() {
+        if is_cancelled(&cancel) {
+            let _ = app.emit("study-stopped", json!({"message": "已停止刷课"}));
+            return Ok(());
+        }
+
         let mut evt = StudyTaskEvent {
             index: i + 1,
             total,
@@ -332,7 +369,11 @@ pub async fn run_auto_study(
 
         match leaf_type {
             0 => {
-                if let Err(e) = handle_video(&app, &client, &course_id, &lid, name, &mut evt).await {
+                if let Err(e) = handle_video(&app, &client, &course_id, &lid, name, &mut evt, &cancel).await {
+                    if is_cancelled(&cancel) {
+                        let _ = app.emit("study-stopped", json!({"message": "已停止刷课"}));
+                        return Ok(());
+                    }
                     evt.status = "failed".into();
                     evt.message = Some(format!("错误: {}", e));
                     emit_task(&app, &evt);
@@ -346,13 +387,11 @@ pub async fn run_auto_study(
                 }
             }
             4 => {
-                // 讨论 - 已移除，标记跳过
                 evt.status = "skipped".into();
                 evt.message = Some("讨论任务已跳过".into());
                 emit_task(&app, &evt);
             }
             6 => {
-                // 测验/练习 - 已移除自动答题，跳过
                 evt.status = "skipped".into();
                 evt.message = Some("测验任务已跳过（不自动答题）".into());
                 emit_task(&app, &evt);
@@ -364,7 +403,6 @@ pub async fn run_auto_study(
             }
         }
 
-        // 任务间间隔
         if i + 1 < total {
             sleep(Duration::from_millis(1500)).await;
         }

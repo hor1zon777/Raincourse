@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Table, Tabs, Typography, Button, Space, Card, Spin, Tag, message, Modal } from 'antd';
+import { Table, Tabs, Typography, Button, Space, Card, Spin, Tag, message } from 'antd';
 import {
   DownloadOutlined,
   PlayCircleOutlined,
   ExportOutlined,
   ArrowLeftOutlined,
+  UnorderedListOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { useCourseStore } from '../stores/courseStore';
@@ -13,11 +15,21 @@ import type { Work, Ppt, ExportResult } from '../types';
 
 const { Title } = Typography;
 
+interface ChapterTask {
+  index: number;
+  id: number;
+  name: string;
+  leaf_type: number;
+  type_str: string;
+}
+
 export default function CourseDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { works, ppts, loading, fetchWorks, fetchPpts } = useCourseStore();
   const [exporting, setExporting] = useState<number | null>(null);
+  const [chapterTasks, setChapterTasks] = useState<ChapterTask[]>([]);
+  const [chapterLoading, setChapterLoading] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -25,6 +37,19 @@ export default function CourseDetail() {
       fetchPpts(id);
     }
   }, [id, fetchWorks, fetchPpts]);
+
+  const fetchChapterTasks = async () => {
+    if (!id) return;
+    setChapterLoading(true);
+    try {
+      const tasks = await invoke<ChapterTask[]>('get_chapter_tasks', { courseId: id });
+      setChapterTasks(tasks);
+    } catch (e) {
+      message.error(`获取章节任务失败: ${e}`);
+    } finally {
+      setChapterLoading(false);
+    }
+  };
 
   const handleExportAnswer = async (work: Work) => {
     if (!id) return;
@@ -67,6 +92,16 @@ export default function CourseDetail() {
       case '已提交': return 'blue';
       case '未提交': return 'orange';
       case '缺考': return 'red';
+      default: return 'default';
+    }
+  };
+
+  const leafTypeColor = (t: number) => {
+    switch (t) {
+      case 0: return 'blue';
+      case 3: return 'cyan';
+      case 4: return 'purple';
+      case 6: return 'orange';
       default: return 'default';
     }
   };
@@ -116,6 +151,30 @@ export default function CourseDetail() {
     { title: '页数', dataIndex: 'count', key: 'count', width: 80 },
   ];
 
+  const chapterColumns = [
+    { title: '序号', dataIndex: 'index', key: 'index', width: 60 },
+    { title: '任务名称', dataIndex: 'name', key: 'name' },
+    {
+      title: '类型',
+      dataIndex: 'type_str',
+      key: 'type_str',
+      width: 100,
+      render: (v: string, record: ChapterTask) => (
+        <Tag color={leafTypeColor(record.leaf_type)}>{v}</Tag>
+      ),
+    },
+    { title: '任务 ID', dataIndex: 'id', key: 'id', width: 110 },
+  ];
+
+  // 章节任务统计
+  const taskStats = chapterTasks.reduce(
+    (acc, t) => {
+      acc[t.type_str] = (acc[t.type_str] || 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
@@ -136,6 +195,11 @@ export default function CourseDetail() {
       <Card>
         <Spin spinning={loading}>
           <Tabs
+            onChange={(key) => {
+              if (key === 'chapters' && chapterTasks.length === 0) {
+                fetchChapterTasks();
+              }
+            }}
             items={[
               {
                 key: 'works',
@@ -149,6 +213,45 @@ export default function CourseDetail() {
                 label: `课件列表 (${ppts.length})`,
                 children: (
                   <Table columns={pptColumns} dataSource={ppts} rowKey="courseware_id" pagination={false} size="middle" />
+                ),
+              },
+              {
+                key: 'chapters',
+                label: (
+                  <span>
+                    <UnorderedListOutlined /> 章节任务 {chapterTasks.length > 0 ? `(${chapterTasks.length})` : ''}
+                  </span>
+                ),
+                children: (
+                  <Spin spinning={chapterLoading}>
+                    {chapterTasks.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <Space>
+                          {Object.entries(taskStats).map(([type, count]) => (
+                            <Tag key={type}>{type}: {count}</Tag>
+                          ))}
+                          <Tag color="blue">共 {chapterTasks.length} 个任务</Tag>
+                        </Space>
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                      <Button
+                        size="small"
+                        icon={<ReloadOutlined />}
+                        onClick={fetchChapterTasks}
+                        loading={chapterLoading}
+                      >
+                        刷新
+                      </Button>
+                    </div>
+                    <Table
+                      columns={chapterColumns}
+                      dataSource={chapterTasks}
+                      rowKey="id"
+                      pagination={chapterTasks.length > 50 ? { pageSize: 50 } : false}
+                      size="middle"
+                    />
+                  </Spin>
                 ),
               },
             ]}

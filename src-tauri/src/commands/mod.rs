@@ -1,4 +1,5 @@
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
@@ -9,11 +10,13 @@ use crate::models::course::Course;
 use crate::models::exam::{ExportResult, Ppt, Work, WorkStatus};
 use crate::session::manager as sess;
 use crate::storage::json_store;
-use crate::{excel, study, ws};
+use crate::study::{self, ChapterTask};
+use crate::{excel, ws};
 
 pub struct AppState {
     pub client: Mutex<RainClient>,
     pub username: Mutex<Option<String>>,
+    pub study_cancel: Arc<AtomicBool>,
 }
 
 // ========== 认证 Commands ==========
@@ -325,7 +328,44 @@ pub async fn start_auto_study(
     course_id: String,
 ) -> Result<(), AppError> {
     let client = state.client.lock().unwrap().clone();
-    study::run_auto_study(app, client, course_id).await
+    let cancel = state.study_cancel.clone();
+    study::run_auto_study(app, client, course_id, cancel).await
+}
+
+#[tauri::command]
+pub async fn stop_auto_study(state: State<'_, AppState>) -> Result<(), AppError> {
+    state.study_cancel.store(true, Ordering::Relaxed);
+    log::info!("收到停止刷课请求");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_chapter_tasks(
+    state: State<'_, AppState>,
+    course_id: String,
+) -> Result<Vec<ChapterTask>, AppError> {
+    let client = state.client.lock().unwrap().clone();
+    let sign_resp = client.get_course_sign(&course_id).await?;
+    let course_sign = sign_resp["data"]["course_sign"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let chapter_data = client.get_all_chapter(&course_id, &course_sign).await?;
+
+    let raw_tasks = study::extract_tasks(&chapter_data);
+    let tasks: Vec<ChapterTask> = raw_tasks
+        .into_iter()
+        .enumerate()
+        .map(|(i, (id, name, leaf_type))| ChapterTask {
+            index: i + 1,
+            id,
+            name,
+            leaf_type,
+            type_str: study::leaf_type_str(leaf_type).to_string(),
+        })
+        .collect();
+
+    Ok(tasks)
 }
 
 // ========== Excel 导出 Commands ==========

@@ -9,7 +9,8 @@ mod study;
 mod ws;
 
 use commands::AppState;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -20,6 +21,7 @@ pub fn run() {
         .manage(AppState {
             client: Mutex::new(api::client::RainClient::new()),
             username: Mutex::new(None),
+            study_cancel: Arc::new(AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             commands::init_client,
@@ -35,6 +37,8 @@ pub fn run() {
             commands::get_answer_files,
             commands::get_course_chapters,
             commands::start_auto_study,
+            commands::stop_auto_study,
+            commands::get_chapter_tasks,
             commands::export_excel,
             commands::get_exam_files,
         ])
