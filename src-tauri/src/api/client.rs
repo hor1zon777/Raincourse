@@ -1,0 +1,546 @@
+use std::sync::Arc;
+
+use reqwest::cookie::CookieStore;
+use reqwest::header::{HeaderMap, HeaderValue, COOKIE, REFERER, USER_AGENT};
+use reqwest::{Client, cookie::Jar};
+use serde_json::Value;
+
+use crate::error::AppError;
+
+const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0";
+
+const BASE_URL: &str = "https://www.yuketang.cn";
+const EXAM_BASE_URL: &str = "https://examination.xuetangx.com";
+const MOOC_BASE_URL: &str = "https://wyuyjs.yuketang.cn";
+
+#[derive(Clone)]
+pub struct RainClient {
+    pub client: Client,
+    pub jar: Arc<Jar>,
+}
+
+impl RainClient {
+    pub fn new() -> Self {
+        let jar = Arc::new(Jar::default());
+        let client = Client::builder()
+            .cookie_provider(jar.clone())
+            .user_agent(UA)
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .expect("无法创建 HTTP 客户端");
+
+        Self { client, jar }
+    }
+
+    /// 初始化访问，获取初始 cookie
+    pub async fn init(&self) -> Result<(), AppError> {
+        let url = format!("{}/web", BASE_URL);
+        self.client.get(&url).send().await?.error_for_status()?;
+        log::info!("网站初始化访问成功");
+        Ok(())
+    }
+
+    /// 获取 csrftoken
+    pub fn get_csrftoken(&self) -> Option<String> {
+        let url = BASE_URL.parse::<url::Url>().ok()?;
+        let cookies = self.jar.cookies(&url)?;
+        let cookie_str: &str = cookies.to_str().ok()?;
+        for part in cookie_str.split(';') {
+            let trimmed: &str = part.trim();
+            if let Some(val) = trimmed.strip_prefix("csrftoken=") {
+                return Some(val.to_string());
+            }
+        }
+        None
+    }
+
+    /// 获取指定 cookie 值
+    pub fn get_cookie_value(&self, name: &str) -> Option<String> {
+        let url = BASE_URL.parse::<url::Url>().ok()?;
+        let cookies = self.jar.cookies(&url)?;
+        let cookie_str: &str = cookies.to_str().ok()?;
+        let prefix = format!("{}=", name);
+        for part in cookie_str.split(';') {
+            let trimmed: &str = part.trim();
+            if let Some(val) = trimmed.strip_prefix(&prefix) {
+                return Some(val.to_string());
+            }
+        }
+        None
+    }
+
+    /// 获取全部 cookie 字符串
+    pub fn get_all_cookies(&self) -> String {
+        let url = BASE_URL.parse::<url::Url>().unwrap();
+        self.jar
+            .cookies(&url)
+            .map(|c: reqwest::header::HeaderValue| c.to_str().unwrap_or("").to_string())
+            .unwrap_or_default()
+    }
+
+    /// 构建带 CSRF 的通用请求头
+    pub fn common_headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(UA));
+        headers.insert(REFERER, HeaderValue::from_static("https://www.yuketang.cn/"));
+        if let Some(csrf) = self.get_csrftoken() {
+            headers.insert("X-Csrftoken", HeaderValue::from_str(&csrf).unwrap());
+        }
+        headers
+    }
+
+    /// 构建课堂级请求头
+    pub fn classroom_headers(&self, class_id: &str) -> HeaderMap {
+        let mut headers = self.common_headers();
+        headers.insert("Xtbz", HeaderValue::from_static("ykt"));
+        headers.insert("Classroom-Id", HeaderValue::from_str(class_id).unwrap());
+        headers.insert("X-Client", HeaderValue::from_static("web"));
+        headers.insert("xt-agent", HeaderValue::from_static("web"));
+        if let Some(sid) = self.get_cookie_value("sessionid") {
+            let cookie_val = format!(
+                "classroom_id={};classroomId={};sessionid={}",
+                class_id, class_id, sid
+            );
+            headers.insert(COOKIE, HeaderValue::from_str(&cookie_val).unwrap());
+        }
+        headers
+    }
+
+    /// 构建考试平台请求头
+    pub fn exam_headers(&self, exam_id: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(UA));
+        headers.insert("Accept", HeaderValue::from_static("application/json, text/plain, */*"));
+        headers.insert("Content-Type", HeaderValue::from_static("application/json"));
+        headers.insert("X-Client", HeaderValue::from_static("web"));
+        headers.insert("Xtbz", HeaderValue::from_static("cloud"));
+        headers.insert("Origin", HeaderValue::from_static(EXAM_BASE_URL));
+        let referer = format!("{}/exam/{}?isFrom=2", EXAM_BASE_URL, exam_id);
+        headers.insert(REFERER, HeaderValue::from_str(&referer).unwrap());
+        headers
+    }
+
+    // ========== 认证 API ==========
+
+    pub async fn post_web_login(&self, user_id: i64, auth: &str) -> Result<(), AppError> {
+        let url = format!("{}/pc/web_login", BASE_URL);
+        let body = serde_json::json!({"UserID": user_id, "Auth": auth});
+        self.client
+            .post(&url)
+            .headers(self.common_headers())
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn get_user_info(&self) -> Result<Value, AppError> {
+        let url = format!("{}/v2/api/web/userinfo", BASE_URL);
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.common_headers())
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    // ========== 课程 API ==========
+
+    pub async fn get_course_list(&self) -> Result<Value, AppError> {
+        let url = format!("{}/v2/api/web/courses/list?identity=2", BASE_URL);
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.common_headers())
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn get_works(&self, course_id: &str) -> Result<Value, AppError> {
+        let url = format!(
+            "{}/v2/api/web/logs/learn/{}?actype=5&page=0&offset=20&sort=-1",
+            BASE_URL, course_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.common_headers())
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn get_ppts(&self, class_id: &str) -> Result<Value, AppError> {
+        let url = format!(
+            "{}/v2/api/web/logs/learn/{}?actype=15&page=0&offset=200&sort=-1",
+            BASE_URL, class_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.common_headers())
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    // ========== 考试/答案 API ==========
+
+    pub async fn get_token_work(
+        &self,
+        course_id: &str,
+        work_id: &str,
+    ) -> Result<Value, AppError> {
+        let url = format!("{}/v/exam/gen_token", BASE_URL);
+        let mut headers = self.common_headers();
+        let referer = format!(
+            "{}/v2/web/trans/{}/{}?status=1",
+            BASE_URL, course_id, work_id
+        );
+        headers.insert(REFERER, HeaderValue::from_str(&referer).unwrap());
+
+        let body = serde_json::json!({
+            "exam_id": work_id,
+            "classroom_id": course_id
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn get_token_work_2(
+        &self,
+        course_id: &str,
+        work_id: &str,
+    ) -> Result<Value, AppError> {
+        let url = format!("{}/v/exam/gen_token", BASE_URL);
+        let mut headers = self.classroom_headers(course_id);
+        let referer = format!(
+            "{}/v2/web/trans/{}/{}?status=4",
+            BASE_URL, course_id, work_id
+        );
+        headers.insert(REFERER, HeaderValue::from_str(&referer).unwrap());
+
+        let body = serde_json::json!({
+            "exam_id": work_id,
+            "classroom_id": course_id
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn get_exam_login(
+        &self,
+        work_id: &str,
+        user_id: &str,
+        token: &str,
+    ) -> Result<(), AppError> {
+        let url = format!("{}/login", EXAM_BASE_URL);
+        let next_url = format!("{}/exam/{}?isFrom=2", EXAM_BASE_URL, work_id);
+        self.client
+            .get(&url)
+            .query(&[
+                ("exam_id", work_id),
+                ("user_id", user_id),
+                ("crypt", token),
+                ("next", &next_url),
+                ("language", "zh"),
+            ])
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn get_all_answer(&self, exam_id: &str) -> Result<Option<Value>, AppError> {
+        let url = format!(
+            "{}/exam_room/problem_results?exam_id={}",
+            EXAM_BASE_URL, exam_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.exam_headers(exam_id))
+            .send()
+            .await?;
+        match resp.json::<Value>().await {
+            Ok(val) => Ok(Some(val)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub async fn get_all_question(&self, exam_id: &str) -> Result<Value, AppError> {
+        let url = format!(
+            "{}/exam_room/show_paper?exam_id={}",
+            EXAM_BASE_URL, exam_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.exam_headers(exam_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn get_exam_cover(
+        &self,
+        classroom_id: &str,
+        exam_id: &str,
+    ) -> Result<Value, AppError> {
+        let url = format!(
+            "{}/v/exam/cover?exam_id={}&classroom_id={}",
+            BASE_URL, exam_id, classroom_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.common_headers())
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn get_pub_new_prob(
+        &self,
+        classroom_id: &str,
+        work_id: &str,
+    ) -> Result<Value, AppError> {
+        let url = format!("{}/mooc-api/v1/lms/learn/course/pub_new_pro", BASE_URL);
+        let mut headers = self.classroom_headers(classroom_id);
+        headers.insert("Origin", HeaderValue::from_static("https://examination.xuetangx.com"));
+        let body = serde_json::json!({"cid": classroom_id, "new_id": [work_id]});
+        let resp = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    // ========== 章节/刷课 API ==========
+
+    pub async fn get_course_sign(&self, class_id: &str) -> Result<Value, AppError> {
+        let url = format!(
+            "{}/v2/api/web/classrooms/{}?role=5",
+            BASE_URL, class_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.classroom_headers(class_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn get_all_chapter(
+        &self,
+        class_id: &str,
+        course_sign: &str,
+    ) -> Result<Value, AppError> {
+        let uv_id = self.get_cookie_value("uv_id").unwrap_or_default();
+        let url = format!(
+            "{}/mooc-api/v1/lms/learn/course/chapter?cid={}&sign={}&term=latest&uv_id={}",
+            BASE_URL, class_id, course_sign, uv_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.classroom_headers(class_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn get_leaf_info(
+        &self,
+        leaf_id: &str,
+        class_id: &str,
+        course_sign: &str,
+    ) -> Result<Value, AppError> {
+        let uv_id = self.get_cookie_value("uv_id").unwrap_or_default();
+        let url = format!(
+            "{}/mooc-api/v1/lms/learn/leaf_info/{}/{}/?sign={}&term=latest&uv_id={}",
+            MOOC_BASE_URL, class_id, leaf_id, course_sign, uv_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.classroom_headers(class_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn get_status(&self, leaf_id: &str, class_id: &str) -> Result<Value, AppError> {
+        let uv_id = self.get_cookie_value("uv_id").unwrap_or_default();
+        let url = format!(
+            "{}/v/discussion/v2/student/comment/status/?leaf_id={}&classroom_id={}&term=latest&uv_id={}",
+            MOOC_BASE_URL, leaf_id, class_id, uv_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.classroom_headers(class_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    pub async fn read_announcement(
+        &self,
+        leaf_id: &str,
+        class_id: &str,
+        sku_id: &str,
+    ) -> Result<Value, AppError> {
+        let uv_id = self.get_cookie_value("uv_id").unwrap_or_default();
+        let url = format!(
+            "{}/mooc-api/v1/lms/learn/user_article_finish/{}/?cid={}&sid={}&term=latest&uv_id={}",
+            MOOC_BASE_URL, leaf_id, class_id, sku_id, uv_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.classroom_headers(class_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    // ========== 视频 API ==========
+
+    pub async fn get_video_progress(
+        &self,
+        video_id: &str,
+        cid: &str,
+        class_id: &str,
+        user_id: &str,
+    ) -> Result<Option<Value>, AppError> {
+        let uni_id = self.get_cookie_value("university_id").unwrap_or_default();
+        let url = format!(
+            "{}/video-log/get_video_watch_progress/?cid={}&user_id={}&classroom_id={}&video_type=video&vtype=rate&video_id={}&snapshot=1&term=latest&uv_id={}",
+            MOOC_BASE_URL, cid, user_id, class_id, video_id, uni_id
+        );
+        match self
+            .client
+            .get(&url)
+            .headers(self.classroom_headers(class_id))
+            .send()
+            .await
+        {
+            Ok(resp) => match resp.json::<Value>().await {
+                Ok(val) => Ok(Some(val)),
+                Err(_) => Ok(None),
+            },
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub async fn send_heartbeat(&self, heart_data: Vec<Value>) -> Result<Option<String>, AppError> {
+        let url = format!("{}/video-log/heartbeat/", BASE_URL);
+        let body = serde_json::json!({"heart_data": heart_data});
+        match self
+            .client
+            .post(&url)
+            .headers(self.common_headers())
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let text = resp.text().await.unwrap_or_default();
+                Ok(Some(text))
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
+    // ========== PPT API ==========
+
+    pub async fn get_ppt_questions_answer(
+        &self,
+        class_id: &str,
+        ppt_id: &str,
+    ) -> Result<Value, AppError> {
+        let url = format!(
+            "{}/v2/api/web/cards/detlist/{}?classroom_id={}",
+            BASE_URL, ppt_id, class_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.common_headers())
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    /// 获取 WebSocket 登录用的 header 列表
+    pub fn get_ws_login_headers(&self) -> Vec<String> {
+        let mut result = vec![format!("User-Agent: {}", UA)];
+        let cookies = self.get_all_cookies();
+        if !cookies.is_empty() {
+            result.push(format!("Cookie: {}", cookies));
+        }
+        result
+    }
+
+    /// 获取 PPT WebSocket 用的 header 列表
+    pub fn get_ws_ppt_headers(&self, class_id: &str) -> Vec<String> {
+        let mut result = vec![format!("User-Agent: {}", UA)];
+        if let Some(csrf) = self.get_csrftoken() {
+            result.push(format!("X-Csrftoken: {}", csrf));
+        }
+        let cookies = self.get_all_cookies();
+        let extra = format!("; classroomId=;{}", class_id);
+        result.push(format!("Cookie: {}{}", cookies, extra));
+        result
+    }
+}
