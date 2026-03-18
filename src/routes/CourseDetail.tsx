@@ -76,8 +76,9 @@ export default function CourseDetail() {
     try {
       const path = await invoke<string>('export_work_answers', {
         courseId: id,
-        workId: String(work.courseware_id),
+        workId: work.exam_id,
         workName: work.title,
+        workType: work.work_type,
       });
       message.success(`答案已导出: ${path}`);
     } catch (e) {
@@ -93,7 +94,7 @@ export default function CourseDetail() {
     try {
       const result = await invoke<ExportResult>('export_exam_data', {
         courseId: id,
-        workId: String(work.courseware_id),
+        workId: work.exam_id,
         workName: work.title,
         workType: work.work_type,
       });

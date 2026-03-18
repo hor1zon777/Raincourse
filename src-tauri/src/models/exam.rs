@@ -39,6 +39,8 @@ impl WorkStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Work {
     pub courseware_id: i64,
+    /// 实际的考试 ID：type 20 用 content.leaf_type_id，其他用 courseware_id
+    pub exam_id: String,
     pub title: String,
     pub status: String,
     pub score: Option<f64>,

@@ -16,6 +16,7 @@ export interface Course {
 // 作业
 export interface Work {
   courseware_id: number;
+  exam_id: string;
   title: string;
   status: string;
   score: number | null;

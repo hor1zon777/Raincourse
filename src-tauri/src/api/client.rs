@@ -96,11 +96,20 @@ impl RainClient {
         headers.insert("Classroom-Id", HeaderValue::from_str(class_id).unwrap());
         headers.insert("X-Client", HeaderValue::from_static("web"));
         headers.insert("xt-agent", HeaderValue::from_static("web"));
+
+        // 构建完整 cookie，包含 csrftoken + sessionid + classroomId
+        let mut cookie_parts: Vec<String> = Vec::new();
+        if let Some(csrf) = self.get_cookie_value("csrftoken") {
+            cookie_parts.push(format!("csrftoken={}", csrf));
+        }
         if let Some(sid) = self.get_cookie_value("sessionid") {
-            let cookie_val = format!(
-                "classroom_id={};classroomId={};sessionid={}",
-                class_id, class_id, sid
-            );
+            cookie_parts.push(format!("sessionid={}", sid));
+        }
+        cookie_parts.push(format!("classroom_id={}", class_id));
+        cookie_parts.push(format!("classroomId={}", class_id));
+
+        if !cookie_parts.is_empty() {
+            let cookie_val = cookie_parts.join(";");
             headers.insert(COOKIE, HeaderValue::from_str(&cookie_val).unwrap());
         }
         headers
@@ -197,6 +206,36 @@ impl RainClient {
 
     // ========== 考试/答案 API ==========
 
+    /// 初始化考试页面（获取重定向后的 cookie）
+    pub async fn init_exam(&self, course_id: &str, work_id: &str) -> Result<(), AppError> {
+        let url = format!(
+            "{}/v2/web/trans/{}/{}?status=1",
+            BASE_URL, course_id, work_id
+        );
+        self.client
+            .get(&url)
+            .headers(self.common_headers())
+            .send()
+            .await?;
+        log::info!("init_exam 完成: course={}, work={}", course_id, work_id);
+        Ok(())
+    }
+
+    /// 初始化考试页面（type=20 的作业用 status=4）
+    pub async fn init_exam_2(&self, course_id: &str, work_id: &str) -> Result<(), AppError> {
+        let url = format!(
+            "{}/v2/web/trans/{}/{}?status=4",
+            BASE_URL, course_id, work_id
+        );
+        self.client
+            .get(&url)
+            .headers(self.common_headers())
+            .send()
+            .await?;
+        log::info!("init_exam_2 完成: course={}, work={}", course_id, work_id);
+        Ok(())
+    }
+
     pub async fn get_token_work(
         &self,
         course_id: &str,
@@ -209,16 +248,19 @@ impl RainClient {
             BASE_URL, course_id, work_id
         );
         headers.insert(REFERER, HeaderValue::from_str(&referer).unwrap());
+        headers.insert("Content-Type", HeaderValue::from_static("application/json"));
 
-        let body = serde_json::json!({
+        let body_str = serde_json::json!({
             "exam_id": work_id,
             "classroom_id": course_id
-        });
+        })
+        .to_string();
+
         let resp = self
             .client
             .post(&url)
             .headers(headers)
-            .json(&body)
+            .body(body_str)
             .send()
             .await?
             .json::<Value>()
@@ -238,16 +280,30 @@ impl RainClient {
             BASE_URL, course_id, work_id
         );
         headers.insert(REFERER, HeaderValue::from_str(&referer).unwrap());
+        headers.insert("Content-Type", HeaderValue::from_static("application/json"));
 
-        let body = serde_json::json!({
+        // 确保 csrftoken 也在 cookie 中
+        if let Some(csrf) = self.get_csrftoken() {
+            if let Some(existing_cookie) = headers.get(COOKIE).cloned() {
+                let cookie_str = existing_cookie.to_str().unwrap_or("");
+                if !cookie_str.contains("csrftoken=") {
+                    let new_cookie = format!("{};csrftoken={}", cookie_str, csrf);
+                    headers.insert(COOKIE, HeaderValue::from_str(&new_cookie).unwrap());
+                }
+            }
+        }
+
+        let body_str = serde_json::json!({
             "exam_id": work_id,
             "classroom_id": course_id
-        });
+        })
+        .to_string();
+
         let resp = self
             .client
             .post(&url)
             .headers(headers)
-            .json(&body)
+            .body(body_str)
             .send()
             .await?
             .json::<Value>()

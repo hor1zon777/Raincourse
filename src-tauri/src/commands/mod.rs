@@ -149,13 +149,28 @@ pub async fn get_course_works(
         .map(|item| {
             let status_code = item["status"].as_i64().unwrap_or(-1) as i32;
             let status = WorkStatus::from_code(status_code);
+            let courseware_id = item["courseware_id"].as_i64().unwrap_or(0);
+            let work_type = item["type"].as_i64().unwrap_or(0) as i32;
+
+            // type 20 的作业用 content.leaf_type_id 作为实际考试 ID
+            let exam_id = if work_type == 20 {
+                item["content"]["leaf_type_id"]
+                    .as_i64()
+                    .map(|v| v.to_string())
+                    .or_else(|| item["content"]["leaf_type_id"].as_str().map(|s| s.to_string()))
+                    .unwrap_or_else(|| courseware_id.to_string())
+            } else {
+                courseware_id.to_string()
+            };
+
             Work {
-                courseware_id: item["courseware_id"].as_i64().unwrap_or(0),
+                courseware_id,
+                exam_id,
                 title: item["title"].as_str().unwrap_or("").to_string(),
                 status: status.label().to_string(),
                 score: item["score"].as_f64(),
                 problem_count: item["problem_count"].as_i64().map(|v| v as i32),
-                work_type: item["type"].as_i64().unwrap_or(0) as i32,
+                work_type,
             }
         })
         .collect();
@@ -194,20 +209,42 @@ pub async fn export_work_answers(
     course_id: String,
     work_id: String,
     work_name: String,
+    work_type: Option<i32>,
 ) -> Result<String, AppError> {
     let client = state.client.lock().unwrap().clone();
+    let wt = work_type.unwrap_or(0);
 
-    // 获取 token
-    let token_resp = client.get_token_work(&course_id, &work_id).await?;
-    let user_id = token_resp["data"]["user_id"].as_str().unwrap_or("");
-    let token = token_resp["data"]["token"].as_str().unwrap_or("");
+    // 1. 先初始化考试页面（获取重定向 cookie）
+    if wt == 20 {
+        client.init_exam_2(&course_id, &work_id).await?;
+    } else {
+        client.init_exam(&course_id, &work_id).await?;
+    }
 
-    // 登录考试平台
-    client
-        .get_exam_login(&work_id, &user_id.to_string(), token)
-        .await?;
+    // 2. 根据作业类型获取 token
+    let token_resp = if wt == 20 {
+        client.get_token_work_2(&course_id, &work_id).await?
+    } else {
+        client.get_token_work(&course_id, &work_id).await?
+    };
 
-    // 获取答案
+    if token_resp["success"].as_bool() == Some(false) {
+        return Err(AppError::ApiError(
+            token_resp["msg"].as_str().unwrap_or("获取 token 失败").to_string(),
+        ));
+    }
+
+    // user_id 可能是数字或字符串
+    let user_id = match token_resp["data"]["user_id"].as_str() {
+        Some(s) => s.to_string(),
+        None => token_resp["data"]["user_id"].to_string().replace('"', ""),
+    };
+    let token = token_resp["data"]["token"].as_str().unwrap_or("").to_string();
+
+    // 3. 登录考试平台
+    client.get_exam_login(&work_id, &user_id, &token).await?;
+
+    // 4. 获取答案
     let answers = client.get_all_answer(&work_id).await?;
     if let Some(answer_data) = answers {
         let app_data_dir = app.path().app_data_dir().unwrap();
@@ -235,7 +272,14 @@ pub async fn export_exam_data(
 ) -> Result<ExportResult, AppError> {
     let client = state.client.lock().unwrap().clone();
 
-    // 根据作业类型选择 token 获取方式
+    // 1. 先初始化考试页面
+    if work_type == 20 {
+        client.init_exam_2(&course_id, &work_id).await?;
+    } else {
+        client.init_exam(&course_id, &work_id).await?;
+    }
+
+    // 2. 根据作业类型选择 token 获取方式
     let token_resp = if work_type == 20 {
         client.get_token_work_2(&course_id, &work_id).await?
     } else {
@@ -251,12 +295,17 @@ pub async fn export_exam_data(
         ));
     }
 
-    let user_id = token_resp["data"]["user_id"].to_string().replace('"', "");
+    // 3. user_id 可能是数字或字符串
+    let user_id = match token_resp["data"]["user_id"].as_str() {
+        Some(s) => s.to_string(),
+        None => token_resp["data"]["user_id"].to_string().replace('"', ""),
+    };
     let token = token_resp["data"]["token"]
         .as_str()
         .unwrap_or("")
         .to_string();
 
+    // 4. 登录考试平台
     client.get_exam_login(&work_id, &user_id, &token).await?;
 
     let app_data_dir = app.path().app_data_dir().unwrap();
