@@ -328,12 +328,13 @@ pub fn leaf_type_str(t: i32) -> &'static str {
     }
 }
 
-/// 主入口：自动刷课（支持取消）
+/// 主入口：自动刷课（支持取消 + 自定义任务）
 pub async fn run_auto_study(
     app: AppHandle,
     client: RainClient,
     course_id: String,
     cancel: Arc<AtomicBool>,
+    task_ids: Option<Vec<i64>>,
 ) -> Result<(), AppError> {
     // 重置取消标志
     cancel.store(false, Ordering::Relaxed);
@@ -346,8 +347,22 @@ pub async fn run_auto_study(
         .to_string();
     let chapter_data = client.get_all_chapter(&course_id, &course_sign).await?;
 
-    let tasks = extract_tasks(&chapter_data);
+    let all_tasks = extract_tasks(&chapter_data);
+
+    // 如果指定了 task_ids，只保留选中的任务
+    let tasks: Vec<(i64, String, i32)> = match &task_ids {
+        Some(ids) => all_tasks
+            .into_iter()
+            .filter(|(id, _, _)| ids.contains(id))
+            .collect(),
+        None => all_tasks,
+    };
     let total = tasks.len();
+
+    if total == 0 {
+        let _ = app.emit("study-complete", json!({}));
+        return Ok(());
+    }
 
     for (i, (leaf_id, name, leaf_type)) in tasks.iter().enumerate() {
         if is_cancelled(&cancel) {

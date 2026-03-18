@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Table, Tabs, Typography, Button, Space, Card, Spin, Tag, message } from 'antd';
+import { Table, Tabs, Typography, Button, Space, Card, Spin, Tag, message, Select } from 'antd';
 import {
   DownloadOutlined,
   PlayCircleOutlined,
@@ -8,12 +8,14 @@ import {
   ArrowLeftOutlined,
   UnorderedListOutlined,
   ReloadOutlined,
+  CheckSquareOutlined,
+  FilterOutlined,
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { useCourseStore } from '../stores/courseStore';
 import type { Work, Ppt, ExportResult } from '../types';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 interface ChapterTask {
   index: number;
@@ -23,6 +25,13 @@ interface ChapterTask {
   type_str: string;
 }
 
+const LEAF_TYPE_OPTIONS = [
+  { value: 0, label: '视频', color: 'blue' },
+  { value: 3, label: '公告', color: 'cyan' },
+  { value: 4, label: '讨论', color: 'purple' },
+  { value: 6, label: '测验/练习', color: 'orange' },
+];
+
 export default function CourseDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -30,6 +39,9 @@ export default function CourseDetail() {
   const [exporting, setExporting] = useState<number | null>(null);
   const [chapterTasks, setChapterTasks] = useState<ChapterTask[]>([]);
   const [chapterLoading, setChapterLoading] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<number[]>([]);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([]);
+  const [nameFilter, setNameFilter] = useState('');
 
   useEffect(() => {
     if (id) {
@@ -50,6 +62,13 @@ export default function CourseDetail() {
       setChapterLoading(false);
     }
   };
+
+  // 筛选后的任务列表
+  const filteredTasks = chapterTasks.filter((t) => {
+    if (typeFilter.length > 0 && !typeFilter.includes(t.leaf_type)) return false;
+    if (nameFilter && !t.name.toLowerCase().includes(nameFilter.toLowerCase())) return false;
+    return true;
+  });
 
   const handleExportAnswer = async (work: Work) => {
     if (!id) return;
@@ -84,6 +103,23 @@ export default function CourseDetail() {
     } finally {
       setExporting(null);
     }
+  };
+
+  const handleStudySelected = () => {
+    if (selectedTaskIds.length === 0) {
+      message.warning('请先勾选要刷的任务');
+      return;
+    }
+    navigate(`/study/${id}`, { state: { taskIds: selectedTaskIds } });
+  };
+
+  const handleStudyAll = () => {
+    navigate(`/study/${id}`);
+  };
+
+  const handleSelectAllFiltered = () => {
+    const allFilteredIds = filteredTasks.map((t) => t.id);
+    setSelectedTaskIds(allFilteredIds);
   };
 
   const statusColor = (status: string) => {
@@ -175,6 +211,13 @@ export default function CourseDetail() {
     {} as Record<string, number>,
   );
 
+  const rowSelection = {
+    selectedRowKeys: selectedTaskIds,
+    onChange: (keys: React.Key[]) => {
+      setSelectedTaskIds(keys as number[]);
+    },
+  };
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
@@ -186,9 +229,9 @@ export default function CourseDetail() {
         <Button
           type="primary"
           icon={<PlayCircleOutlined />}
-          onClick={() => navigate(`/study/${id}`)}
+          onClick={handleStudyAll}
         >
-          开始刷课
+          全部刷课
         </Button>
       </div>
 
@@ -224,31 +267,100 @@ export default function CourseDetail() {
                 ),
                 children: (
                   <Spin spinning={chapterLoading}>
+                    {/* 统计栏 */}
                     {chapterTasks.length > 0 && (
                       <div style={{ marginBottom: 12 }}>
-                        <Space>
+                        <Space wrap>
                           {Object.entries(taskStats).map(([type, count]) => (
                             <Tag key={type}>{type}: {count}</Tag>
                           ))}
                           <Tag color="blue">共 {chapterTasks.length} 个任务</Tag>
+                          {typeFilter.length > 0 && (
+                            <Tag color="green">筛选后: {filteredTasks.length} 个</Tag>
+                          )}
+                          {selectedTaskIds.length > 0 && (
+                            <Tag color="orange">已选: {selectedTaskIds.length} 个</Tag>
+                          )}
                         </Space>
                       </div>
                     )}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-                      <Button
-                        size="small"
-                        icon={<ReloadOutlined />}
-                        onClick={fetchChapterTasks}
-                        loading={chapterLoading}
-                      >
-                        刷新
-                      </Button>
+
+                    {/* 筛选与操作栏 */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                      <FilterOutlined style={{ color: '#999' }} />
+                      <Select
+                        mode="multiple"
+                        allowClear
+                        placeholder="按类型筛选"
+                        style={{ minWidth: 200 }}
+                        value={typeFilter}
+                        onChange={(v) => {
+                          setTypeFilter(v);
+                          setSelectedTaskIds([]);
+                        }}
+                        options={LEAF_TYPE_OPTIONS.map((o) => ({
+                          value: o.value,
+                          label: <Tag color={o.color}>{o.label}</Tag>,
+                        }))}
+                      />
+                      <input
+                        placeholder="搜索任务名称..."
+                        value={nameFilter}
+                        onChange={(e) => setNameFilter(e.target.value)}
+                        style={{
+                          padding: '4px 11px',
+                          border: '1px solid #d9d9d9',
+                          borderRadius: 6,
+                          outline: 'none',
+                          fontSize: 14,
+                          width: 180,
+                        }}
+                      />
+
+                      <div style={{ flex: 1 }} />
+
+                      <Space>
+                        <Button
+                          size="small"
+                          icon={<CheckSquareOutlined />}
+                          onClick={handleSelectAllFiltered}
+                          disabled={filteredTasks.length === 0}
+                        >
+                          全选当前
+                        </Button>
+                        <Button
+                          size="small"
+                          onClick={() => setSelectedTaskIds([])}
+                          disabled={selectedTaskIds.length === 0}
+                        >
+                          清空选择
+                        </Button>
+                        <Button
+                          type="primary"
+                          size="small"
+                          icon={<PlayCircleOutlined />}
+                          onClick={handleStudySelected}
+                          disabled={selectedTaskIds.length === 0}
+                        >
+                          刷选中 ({selectedTaskIds.length})
+                        </Button>
+                        <Button
+                          size="small"
+                          icon={<ReloadOutlined />}
+                          onClick={fetchChapterTasks}
+                          loading={chapterLoading}
+                        >
+                          刷新
+                        </Button>
+                      </Space>
                     </div>
+
                     <Table
+                      rowSelection={rowSelection}
                       columns={chapterColumns}
-                      dataSource={chapterTasks}
+                      dataSource={filteredTasks}
                       rowKey="id"
-                      pagination={chapterTasks.length > 50 ? { pageSize: 50 } : false}
+                      pagination={filteredTasks.length > 50 ? { pageSize: 50 } : false}
                       size="middle"
                     />
                   </Spin>

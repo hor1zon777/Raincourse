@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Typography, Button, Tag, Progress, List, Spin, message, Popconfirm } from 'antd';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { Card, Typography, Button, Tag, Progress, List, Spin, message, Popconfirm, Alert } from 'antd';
 import {
   ArrowLeftOutlined,
   PlayCircleOutlined,
@@ -22,9 +22,17 @@ interface Task {
   message?: string;
 }
 
+interface LocationState {
+  taskIds?: number[];
+}
+
 export default function StudyProgress() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const locationState = (location.state || {}) as LocationState;
+  const customTaskIds = locationState.taskIds;
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [running, setRunning] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -79,7 +87,10 @@ export default function StudyProgress() {
     setStopping(false);
     setTasks([]);
     try {
-      await invoke('start_auto_study', { courseId: id });
+      await invoke('start_auto_study', {
+        courseId: id,
+        taskIds: customTaskIds ?? null,
+      });
     } catch (e) {
       if (!stopping) {
         message.error(`启动失败: ${e}`);
@@ -149,6 +160,16 @@ export default function StudyProgress() {
           </Button>
         )}
       </div>
+
+      {customTaskIds && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`自定义刷课模式：已选择 ${customTaskIds.length} 个任务`}
+          description="只会执行选中的任务，其余任务将被跳过"
+        />
+      )}
 
       {tasks.length > 0 && (
         <Card style={{ marginBottom: 16 }}>

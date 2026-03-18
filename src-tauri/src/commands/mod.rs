@@ -326,10 +326,11 @@ pub async fn start_auto_study(
     app: AppHandle,
     state: State<'_, AppState>,
     course_id: String,
+    task_ids: Option<Vec<i64>>,
 ) -> Result<(), AppError> {
     let client = state.client.lock().unwrap().clone();
     let cancel = state.study_cancel.clone();
-    study::run_auto_study(app, client, course_id, cancel).await
+    study::run_auto_study(app, client, course_id, cancel, task_ids).await
 }
 
 #[tauri::command]
