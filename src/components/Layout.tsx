@@ -54,13 +54,13 @@ export default function AppLayout() {
   };
 
   return (
-    <AntLayout style={{ minHeight: '100vh' }}>
+    <AntLayout style={{ height: '100vh', overflow: 'hidden' }}>
       <Sider
         collapsible
         collapsed={collapsed}
         onCollapse={setCollapsed}
         theme="light"
-        style={{ borderRight: `1px solid ${token.colorBorderSecondary}` }}
+        style={{ height: '100vh', borderRight: `1px solid ${token.colorBorderSecondary}` }}
       >
         <div style={{ padding: '16px', textAlign: 'center' }}>
           <PlayCircleOutlined style={{ fontSize: 28, color: token.colorPrimary }} />
@@ -77,7 +77,7 @@ export default function AppLayout() {
           onClick={({ key }) => navigate(key)}
         />
       </Sider>
-      <AntLayout>
+      <AntLayout style={{ height: '100%' }}>
         <Header
           style={{
             background: token.colorBgContainer,
@@ -97,7 +97,17 @@ export default function AppLayout() {
             </Dropdown>
           )}
         </Header>
-        <Content style={{ margin: 16, padding: 24, background: token.colorBgContainer, borderRadius: 8, overflow: 'auto' }}>
+        <Content
+          style={{
+            flex: 1,
+            minHeight: 0,
+            margin: 16,
+            padding: 24,
+            background: token.colorBgContainer,
+            borderRadius: 8,
+            overflow: 'auto',
+          }}
+        >
           <Outlet />
         </Content>
       </AntLayout>
