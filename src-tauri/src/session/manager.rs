@@ -69,3 +69,18 @@ pub fn list_saved_users(app_data_dir: &PathBuf) -> Vec<String> {
 
     users
 }
+
+/// 删除已保存用户的 session 文件
+pub fn remove_session(app_data_dir: &PathBuf, username: &str) -> Result<(), AppError> {
+    let dir = get_users_dir(app_data_dir);
+    let file_path = dir.join(format!("{}.json", username));
+
+    if file_path.exists() {
+        std::fs::remove_file(&file_path)?;
+        log::info!("Session 已删除: {}", file_path.display());
+    } else {
+        log::info!("Session 文件不存在，视为已删除: {}", file_path.display());
+    }
+
+    Ok(())
+}

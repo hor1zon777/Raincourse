@@ -28,6 +28,7 @@ pub fn run() {
             commands::start_qr_login,
             commands::login_with_session,
             commands::get_saved_users,
+            commands::remove_saved_user,
             commands::get_user_info,
             commands::get_course_list,
             commands::get_course_works,

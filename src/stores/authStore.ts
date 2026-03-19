@@ -12,6 +12,7 @@ interface AuthState {
   initClient: () => Promise<void>;
   fetchSavedUsers: () => Promise<void>;
   loginWithSession: (username: string) => Promise<void>;
+  removeSavedUser: (username: string) => Promise<void>;
   startQrLogin: () => Promise<void>;
   logout: () => void;
   setUserInfo: (info: UserInfo) => void;
@@ -56,6 +57,24 @@ export const useAuthStore = create<AuthState>((set) => ({
       }
     } catch (e) {
       set({ loading: false, error: String(e) });
+      throw e;
+    }
+  },
+
+  removeSavedUser: async (username: string) => {
+    set({ loading: true, error: null });
+    try {
+      await invoke('remove_saved_user', { username });
+      const users = await invoke<string[]>('get_saved_users');
+      set((state) => ({
+        savedUsers: users,
+        isLoggedIn: state.userInfo?.name === username ? false : state.isLoggedIn,
+        userInfo: state.userInfo?.name === username ? null : state.userInfo,
+        loading: false,
+      }));
+    } catch (e) {
+      set({ loading: false, error: String(e) });
+      throw e;
     }
   },
 

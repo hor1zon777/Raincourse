@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, List, Button, Divider, Typography, Spin, message, Space, Empty } from 'antd';
-import { QrcodeOutlined, UserOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Card, List, Button, Divider, Typography, Spin, message, Space, Empty, Popconfirm } from 'antd';
+import { QrcodeOutlined, UserOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
 import { QRCodeSVG } from 'qrcode.react';
 import { listen } from '@tauri-apps/api/event';
 import { useAuthStore } from '../stores/authStore';
@@ -11,7 +11,7 @@ const { Title, Text } = Typography;
 
 export default function Login() {
   const navigate = useNavigate();
-  const { initClient, fetchSavedUsers, loginWithSession, startQrLogin, savedUsers, loading, isLoggedIn } = useAuthStore();
+  const { initClient, fetchSavedUsers, loginWithSession, removeSavedUser, startQrLogin, savedUsers, loading, isLoggedIn, userInfo } = useAuthStore();
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
 
@@ -64,6 +64,23 @@ export default function Login() {
     [loginWithSession],
   );
 
+  const handleRemoveSavedUser = useCallback(
+    async (username: string) => {
+      try {
+        const deletingCurrentUser = isLoggedIn && username === userInfo?.name;
+        await removeSavedUser(username);
+        message.success(
+          deletingCurrentUser
+            ? `已删除本地保存账号 ${username}，并退出当前登录`
+            : `已删除本地保存账号: ${username}`,
+        );
+      } catch {
+        message.error('删除本地保存账号失败，请稍后重试');
+      }
+    },
+    [isLoggedIn, removeSavedUser, userInfo?.name],
+  );
+
   return (
     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: '#f5f5f5' }}>
       <Card style={{ width: 800, boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}>
@@ -95,6 +112,18 @@ export default function Login() {
                       >
                         登录
                       </Button>,
+                      <Popconfirm
+                        title="确定删除该本地保存账号？"
+                        description="仅删除本地保存的登录会话，不影响雨课堂平台账号本身。"
+                        onConfirm={() => handleRemoveSavedUser(user)}
+                        okText="确定删除"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                      >
+                        <Button type="link" size="small" danger icon={<DeleteOutlined />} loading={loading}>
+                          删除
+                        </Button>
+                      </Popconfirm>,
                     ]}
                   >
                     <List.Item.Meta avatar={<UserOutlined />} title={user} />

@@ -101,6 +101,12 @@ pub async fn get_saved_users(app: AppHandle) -> Result<Vec<String>, AppError> {
 }
 
 #[tauri::command]
+pub async fn remove_saved_user(app: AppHandle, username: String) -> Result<(), AppError> {
+    let app_data_dir = app.path().app_data_dir().unwrap();
+    sess::remove_session(&app_data_dir, &username)
+}
+
+#[tauri::command]
 pub async fn get_user_info(state: State<'_, AppState>) -> Result<Value, AppError> {
     let client = state.client.lock().unwrap().clone();
     client.get_user_info().await
