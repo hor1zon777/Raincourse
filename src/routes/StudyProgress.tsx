@@ -37,11 +37,22 @@ export default function StudyProgress() {
   const [running, setRunning] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [totalTasks, setTotalTasks] = useState(0);
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  // 计时器
+  useEffect(() => {
+    if (!running || !startTime) return;
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - startTime) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [running, startTime]);
 
   useEffect(() => {
     const unlistenUpdate = listen<TaskUpdateEvent>('study-task-update', (event) => {
       const p = event.payload;
       setCurrentIndex(p.index);
+      if (p.total > 0) setTotalTasks(p.total);
       setTasks((prev) => {
         const copy = [...prev];
         const existing = copy.findIndex((t) => t.index === p.index);
@@ -86,6 +97,9 @@ export default function StudyProgress() {
     setRunning(true);
     setStopping(false);
     setTasks([]);
+    setTotalTasks(0);
+    setStartTime(Date.now());
+    setElapsed(0);
     try {
       await invoke('start_auto_study', {
         courseId: id,
@@ -124,6 +138,16 @@ export default function StudyProgress() {
   };
 
   const doneCount = tasks.filter((t) => t.status === 'done' || t.status === 'skipped').length;
+  const failedCount = tasks.filter((t) => t.status === 'failed').length;
+  const effectiveTotal = totalTasks > 0 ? totalTasks : tasks.length;
+  const overallPercent = effectiveTotal > 0 ? Math.round((doneCount / effectiveTotal) * 100) : 0;
+  const currentTask = tasks.find((t) => t.index === currentIndex && t.status === 'running');
+
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+  };
 
   return (
     <div>
@@ -171,19 +195,32 @@ export default function StudyProgress() {
         />
       )}
 
-      {tasks.length > 0 && (
+      {(tasks.length > 0 || totalTasks > 0) && (
         <Card style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <CheckCircleOutlined style={{ fontSize: 24, color: '#52c41a' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 8 }}>
+            <CheckCircleOutlined style={{ fontSize: 24, color: overallPercent >= 100 ? '#52c41a' : '#1677ff' }} />
             <div style={{ flex: 1 }}>
               <Progress
-                percent={tasks.length > 0 ? Math.round((doneCount / tasks.length) * 100) : 0}
-                status={stopping ? 'exception' : running ? 'active' : 'normal'}
+                percent={overallPercent}
+                status={stopping ? 'exception' : running ? 'active' : overallPercent >= 100 ? 'success' : 'normal'}
+                format={(p) => `${p}%`}
               />
             </div>
-            <Text type="secondary">
-              {doneCount} / {tasks.length}
-            </Text>
+          </div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 13, color: '#666' }}>
+            <span>总进度: <Text strong>{doneCount}</Text> / {effectiveTotal}</span>
+            {failedCount > 0 && <span style={{ color: '#ff4d4f' }}>失败: {failedCount}</span>}
+            {elapsed > 0 && <span>已用时: {formatTime(elapsed)}</span>}
+            {running && doneCount > 0 && effectiveTotal > doneCount && (
+              <span>
+                预计剩余: {formatTime(Math.round(((elapsed / doneCount) * (effectiveTotal - doneCount))))}
+              </span>
+            )}
+            {currentTask && (
+              <span style={{ color: '#1677ff' }}>
+                当前: {currentTask.name}
+              </span>
+            )}
           </div>
         </Card>
       )}

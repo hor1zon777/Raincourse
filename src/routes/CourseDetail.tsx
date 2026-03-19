@@ -13,9 +13,9 @@ import {
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { useCourseStore } from '../stores/courseStore';
-import type { Work, Ppt, ExportResult } from '../types';
+import type { Work, ExportResult } from '../types';
 
-const { Title, Text } = Typography;
+const { Title } = Typography;
 
 interface ChapterTask {
   index: number;
