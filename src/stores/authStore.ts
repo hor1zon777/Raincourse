@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import type { UserInfo } from '../types';
+import { parseUserInfo } from '../utils/responseGuards';
+import { normalizeError } from '../utils/errors';
 
 interface AuthState {
   isLoggedIn: boolean;
@@ -14,7 +16,7 @@ interface AuthState {
   loginWithSession: (username: string) => Promise<void>;
   removeSavedUser: (username: string) => Promise<void>;
   startQrLogin: () => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   setUserInfo: (info: UserInfo) => void;
 }
 
@@ -29,7 +31,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       await invoke('init_client');
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: normalizeError(e).message });
     }
   },
 
@@ -38,26 +40,32 @@ export const useAuthStore = create<AuthState>((set) => ({
       const users = await invoke<string[]>('get_saved_users');
       set({ savedUsers: users });
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: normalizeError(e).message });
     }
   },
 
   loginWithSession: async (username: string) => {
     set({ loading: true, error: null });
     try {
-      const resp = await invoke<Record<string, unknown>>('login_with_session', { username });
-      const data = resp?.data as Record<string, unknown>[] | undefined;
-      if (data && data.length > 0) {
-        const user: UserInfo = {
-          user_id: data[0].user_id as number,
-          name: data[0].name as string,
-          school: data[0].school as string | undefined,
-        };
+      const resp = await invoke<unknown>('login_with_session', { username });
+      const user = parseUserInfo(resp);
+      if (user) {
         set({ isLoggedIn: true, userInfo: user, loading: false });
+      } else {
+        // 兜底：后端理论上应该返回 SESSION_EXPIRED，但响应格式异常时
+        // 也防止 loading 永远不停
+        set({ loading: false, isLoggedIn: false, userInfo: null });
+        throw { code: 'SESSION_EXPIRED', message: '会话已过期，请重新扫码登录' };
       }
     } catch (e) {
-      set({ loading: false, error: String(e) });
-      throw e;
+      const err = normalizeError(e);
+      set({
+        loading: false,
+        error: err.message,
+        isLoggedIn: false,
+        userInfo: null,
+      });
+      throw err;
     }
   },
 
@@ -73,8 +81,9 @@ export const useAuthStore = create<AuthState>((set) => ({
         loading: false,
       }));
     } catch (e) {
-      set({ loading: false, error: String(e) });
-      throw e;
+      const err = normalizeError(e);
+      set({ loading: false, error: err.message });
+      throw err;
     }
   },
 
@@ -82,23 +91,28 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ loading: true, error: null });
     try {
       await invoke('start_qr_login');
-      // 登录成功后获取用户信息
-      const resp = await invoke<Record<string, unknown>>('get_user_info');
-      const data = resp?.data as Record<string, unknown>[] | undefined;
-      if (data && data.length > 0) {
-        const user: UserInfo = {
-          user_id: data[0].user_id as number,
-          name: data[0].name as string,
-          school: data[0].school as string | undefined,
-        };
+      const resp = await invoke<unknown>('get_user_info');
+      const user = parseUserInfo(resp);
+      if (user) {
         set({ isLoggedIn: true, userInfo: user, loading: false });
+      } else {
+        set({ loading: false });
+        throw { code: 'GENERAL_ERROR', message: '扫码登录后未能获取用户信息，请重试' };
       }
     } catch (e) {
-      set({ loading: false, error: String(e) });
+      const err = normalizeError(e);
+      set({ loading: false, error: err.message });
+      throw err;
     }
   },
 
-  logout: () => {
+  logout: async () => {
+    // 通知后端清空 cookie jar，防止"切换用户"后旧 cookie 仍发请求
+    try {
+      await invoke('clear_session');
+    } catch (e) {
+      console.warn('clear_session 失败:', e);
+    }
     set({ isLoggedIn: false, userInfo: null });
   },
 

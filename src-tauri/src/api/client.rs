@@ -71,10 +71,13 @@ impl RainClient {
 
     /// 获取全部 cookie 字符串
     pub fn get_all_cookies(&self) -> String {
-        let url = BASE_URL.parse::<url::Url>().unwrap();
+        let url = match BASE_URL.parse::<url::Url>() {
+            Ok(u) => u,
+            Err(_) => return String::new(),
+        };
         self.jar
             .cookies(&url)
-            .map(|c: reqwest::header::HeaderValue| c.to_str().unwrap_or("").to_string())
+            .and_then(|c| c.to_str().ok().map(|s| s.to_string()))
             .unwrap_or_default()
     }
 
@@ -84,7 +87,11 @@ impl RainClient {
         headers.insert(USER_AGENT, HeaderValue::from_static(UA));
         headers.insert(REFERER, HeaderValue::from_static("https://www.yuketang.cn/"));
         if let Some(csrf) = self.get_csrftoken() {
-            headers.insert("X-Csrftoken", HeaderValue::from_str(&csrf).unwrap());
+            if let Ok(v) = HeaderValue::from_str(&csrf) {
+                headers.insert("X-Csrftoken", v);
+            } else {
+                log::warn!("csrftoken 含非法字符，已跳过 X-Csrftoken header");
+            }
         }
         headers
     }
@@ -93,7 +100,11 @@ impl RainClient {
     pub fn classroom_headers(&self, class_id: &str) -> HeaderMap {
         let mut headers = self.common_headers();
         headers.insert("Xtbz", HeaderValue::from_static("ykt"));
-        headers.insert("Classroom-Id", HeaderValue::from_str(class_id).unwrap());
+        if let Ok(v) = HeaderValue::from_str(class_id) {
+            headers.insert("Classroom-Id", v);
+        } else {
+            log::warn!("class_id 含非法字符: {:?}", class_id);
+        }
         headers.insert("X-Client", HeaderValue::from_static("web"));
         headers.insert("xt-agent", HeaderValue::from_static("web"));
 
@@ -110,7 +121,11 @@ impl RainClient {
 
         if !cookie_parts.is_empty() {
             let cookie_val = cookie_parts.join(";");
-            headers.insert(COOKIE, HeaderValue::from_str(&cookie_val).unwrap());
+            if let Ok(v) = HeaderValue::from_str(&cookie_val) {
+                headers.insert(COOKIE, v);
+            } else {
+                log::warn!("cookie 含非法字符，已跳过 Cookie header");
+            }
         }
         headers
     }
@@ -125,7 +140,11 @@ impl RainClient {
         headers.insert("Xtbz", HeaderValue::from_static("cloud"));
         headers.insert("Origin", HeaderValue::from_static(EXAM_BASE_URL));
         let referer = format!("{}/exam/{}?isFrom=2", EXAM_BASE_URL, exam_id);
-        headers.insert(REFERER, HeaderValue::from_str(&referer).unwrap());
+        if let Ok(v) = HeaderValue::from_str(&referer) {
+            headers.insert(REFERER, v);
+        } else {
+            log::warn!("referer 含非法字符: {:?}", referer);
+        }
         headers
     }
 
@@ -212,11 +231,13 @@ impl RainClient {
             "{}/v2/web/trans/{}/{}?status=1",
             BASE_URL, course_id, work_id
         );
+        // 雨课堂会做 302 重定向（携带 cookie），4xx/5xx 视为失败
         self.client
             .get(&url)
             .headers(self.common_headers())
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
         log::info!("init_exam 完成: course={}, work={}", course_id, work_id);
         Ok(())
     }
@@ -231,7 +252,8 @@ impl RainClient {
             .get(&url)
             .headers(self.common_headers())
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
         log::info!("init_exam_2 完成: course={}, work={}", course_id, work_id);
         Ok(())
     }
@@ -522,38 +544,36 @@ impl RainClient {
             "{}/video-log/get_video_watch_progress/?cid={}&user_id={}&classroom_id={}&video_type=video&vtype=rate&video_id={}&snapshot=1&term=latest&uv_id={}",
             MOOC_BASE_URL, cid, user_id, class_id, video_id, uni_id
         );
-        match self
+        // 网络错误向上抛，让调用方决定重试还是放弃；
+        // 仅响应体不是合法 JSON（业务暂时无进度）时返回 None。
+        let resp = self
             .client
             .get(&url)
             .headers(self.classroom_headers(class_id))
             .send()
-            .await
-        {
-            Ok(resp) => match resp.json::<Value>().await {
-                Ok(val) => Ok(Some(val)),
-                Err(_) => Ok(None),
-            },
-            Err(_) => Ok(None),
+            .await?;
+        match resp.json::<Value>().await {
+            Ok(val) => Ok(Some(val)),
+            Err(e) => {
+                log::debug!("get_video_progress JSON 解析失败（可能视频暂无进度记录）: {}", e);
+                Ok(None)
+            }
         }
     }
 
     pub async fn send_heartbeat(&self, heart_data: Vec<Value>) -> Result<Option<String>, AppError> {
         let url = format!("{}/video-log/heartbeat/", BASE_URL);
         let body = serde_json::json!({"heart_data": heart_data});
-        match self
+        // 网络错误向上抛，调用方可据此判定网络异常并暂停心跳。
+        let resp = self
             .client
             .post(&url)
             .headers(self.common_headers())
             .json(&body)
             .send()
-            .await
-        {
-            Ok(resp) => {
-                let text = resp.text().await.unwrap_or_default();
-                Ok(Some(text))
-            }
-            Err(_) => Ok(None),
-        }
+            .await?;
+        let text = resp.text().await.unwrap_or_default();
+        Ok(Some(text))
     }
 
     // ========== PPT API ==========

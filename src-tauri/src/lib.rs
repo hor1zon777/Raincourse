@@ -6,23 +6,19 @@ mod models;
 mod session;
 mod storage;
 mod study;
+mod util;
 mod ws;
 
 use commands::AppState;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    // 测试环境会重复 init，try_init 避免 panic
+    let _ = env_logger::try_init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(AppState {
-            client: Mutex::new(api::client::RainClient::new()),
-            username: Mutex::new(None),
-            study_cancel: Arc::new(AtomicBool::new(false)),
-        })
+        .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::init_client,
             commands::start_qr_login,
@@ -30,6 +26,7 @@ pub fn run() {
             commands::get_saved_users,
             commands::remove_saved_user,
             commands::get_user_info,
+            commands::clear_session,
             commands::get_course_list,
             commands::get_course_works,
             commands::get_course_ppts,

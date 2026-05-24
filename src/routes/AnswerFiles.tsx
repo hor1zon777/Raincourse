@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Table, Card, Typography, Button, Empty, Spin } from 'antd';
+import { Table, Card, Typography, Button, Empty, Spin, message } from 'antd';
 import { ReloadOutlined, FileTextOutlined } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import type { AnswerFile } from '../types';
+import { normalizeError } from '../utils/errors';
 
 const { Title } = Typography;
 
@@ -15,8 +16,15 @@ export default function AnswerFiles() {
     try {
       const data = await invoke<AnswerFile[]>('get_answer_files');
       setFiles(data);
-    } catch {
-      // 忽略
+    } catch (e) {
+      const err = normalizeError(e);
+      // 目录不存在等可恢复错误降级为空列表，但仍提示用户
+      if (err.code === 'IO_ERROR') {
+        setFiles([]);
+        message.info('暂无答案文件目录，请先在课程详情中导出答案');
+      } else {
+        message.error(`获取答案文件失败: ${err.message}`);
+      }
     } finally {
       setLoading(false);
     }

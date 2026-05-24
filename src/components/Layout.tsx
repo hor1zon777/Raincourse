@@ -26,8 +26,15 @@ export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
-  const { userInfo, logout } = useAuthStore();
+  // selector 细粒化
+  const userInfo = useAuthStore((s) => s.userInfo);
+  const logout = useAuthStore((s) => s.logout);
   const { token } = theme.useToken();
+
+  const handleSwitchOrLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
 
   const userMenu = {
     items: [
@@ -35,20 +42,14 @@ export default function AppLayout() {
         key: 'switch',
         icon: <UserOutlined />,
         label: '切换用户',
-        onClick: () => {
-          logout();
-          navigate('/login');
-        },
+        onClick: handleSwitchOrLogout,
       },
       {
         key: 'logout',
         icon: <LogoutOutlined />,
         label: '退出登录',
         danger: true,
-        onClick: () => {
-          logout();
-          navigate('/login');
-        },
+        onClick: handleSwitchOrLogout,
       },
     ],
   };

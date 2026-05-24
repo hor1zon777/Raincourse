@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use rust_xlsxwriter::{Format, Workbook, XlsxError};
 use serde_json::Value;
 
 use crate::error::AppError;
 use crate::storage::json_store;
+use crate::util::sanitize;
 
 /// 从 HTML 中移除标签
 fn strip_html(input: &str) -> String {
@@ -40,15 +41,19 @@ fn find_answer_by_id<'a>(problem_id: &str, results: &'a [Value]) -> Option<&'a V
 
 /// 处理考试数据并生成 Excel
 pub fn export_exam_excel(
-    app_data_dir: &PathBuf,
+    app_data_dir: &Path,
     exam_id: &str,
     exam_name: &str,
 ) -> Result<String, AppError> {
-    let exam_dir = json_store::get_exam_dir(app_data_dir);
+    // 清洗 exam_id（来自前端，会拼到文件名）
+    let exam_id_clean = sanitize::sanitize_filename(exam_id)?;
+    let exam_dir = json_store::get_exam_dir(app_data_dir)?;
 
     // 读取题目和答案文件
-    let question_data = json_store::load_json(&exam_dir, &format!("{}_question.json", exam_id))?;
-    let answer_data = json_store::load_json(&exam_dir, &format!("{}_answer.json", exam_id))?;
+    let question_data =
+        json_store::load_json(&exam_dir, &format!("{}_question.json", exam_id_clean))?;
+    let answer_data =
+        json_store::load_json(&exam_dir, &format!("{}_answer.json", exam_id_clean))?;
 
     let problems = question_data["exam"]["data"]["problems"]
         .as_array()
@@ -62,8 +67,18 @@ pub fn export_exam_excel(
     // 创建工作簿
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
+    // Excel sheet 名限制：≤31 字符 + 禁用 :/\?*[]
+    let sheet_name: String = sanitize::sanitize_filename(exam_name)
+        .unwrap_or_else(|_| exam_id_clean.clone())
+        .chars()
+        .map(|c| match c {
+            ':' | '/' | '\\' | '?' | '*' | '[' | ']' => '_',
+            _ => c,
+        })
+        .take(31)
+        .collect();
     worksheet
-        .set_name(exam_name)
+        .set_name(&sheet_name)
         .map_err(|e: XlsxError| AppError::General(e.to_string()))?;
 
     // 设置表头格式
@@ -113,30 +128,48 @@ pub fn export_exam_excel(
         let answer_display = format_answer(type_text, raw_answer, options);
 
         // 写入行
-        let _ = worksheet.write_string(row, 0, type_code);
-        let _ = worksheet.write_string(row, 1, exam_name);
-        let _ = worksheet.write_string(row, 2, &body);
+        worksheet
+            .write_string(row, 0, type_code)
+            .map_err(|e| AppError::General(e.to_string()))?;
+        worksheet
+            .write_string(row, 1, &sheet_name)
+            .map_err(|e| AppError::General(e.to_string()))?;
+        worksheet
+            .write_string(row, 2, &body)
+            .map_err(|e| AppError::General(e.to_string()))?;
 
         for (i, opt) in option_texts.iter().enumerate() {
             if i < 6 {
-                let _ = worksheet.write_string(row, (3 + i) as u16, opt);
+                worksheet
+                    .write_string(row, (3 + i) as u16, opt)
+                    .map_err(|e| AppError::General(e.to_string()))?;
             }
         }
         // 空选项填空
         for i in option_texts.len()..6 {
-            let _ = worksheet.write_string(row, (3 + i) as u16, "");
+            worksheet
+                .write_string(row, (3 + i) as u16, "")
+                .map_err(|e| AppError::General(e.to_string()))?;
         }
 
-        let _ = worksheet.write_string(row, 9, &answer_display);
-        let _ = worksheet.write_string(row, 10, &remark);
+        worksheet
+            .write_string(row, 9, &answer_display)
+            .map_err(|e| AppError::General(e.to_string()))?;
+        worksheet
+            .write_string(row, 10, &remark)
+            .map_err(|e| AppError::General(e.to_string()))?;
     }
 
-    // 保存文件
+    // 保存文件（exam_name 已清洗）
     let excel_dir = app_data_dir.join("excel");
     if !excel_dir.exists() {
         std::fs::create_dir_all(&excel_dir)?;
     }
-    let file_path = excel_dir.join(format!("{}.xlsx", exam_name));
+    let safe_name = sanitize::sanitize_filename(exam_name).unwrap_or_else(|_| exam_id_clean.clone());
+    let file_path = excel_dir.join(format!("{}.xlsx", safe_name));
+    if !file_path.starts_with(&excel_dir) {
+        return Err(AppError::InvalidInput(format!("非法文件名: {}", exam_name)));
+    }
     let path_str = file_path.to_string_lossy().to_string();
 
     workbook

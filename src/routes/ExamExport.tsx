@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Table, Card, Typography, Button, Spin, Tag, message, Empty } from 'antd';
 import { ReloadOutlined, FileExcelOutlined, ExportOutlined } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
+import { normalizeError } from '../utils/errors';
 
 const { Title } = Typography;
 
@@ -23,9 +24,14 @@ export default function ExamExport() {
     try {
       const data = await invoke<ExamFileInfo[]>('get_exam_files');
       setFiles(data);
-    } catch {
-      // 目录可能还不存在
-      setFiles([]);
+    } catch (e) {
+      const err = normalizeError(e);
+      if (err.code === 'IO_ERROR') {
+        setFiles([]);
+        message.info('暂无考试数据，请先在课程详情中导出');
+      } else {
+        message.error(`获取考试文件失败: ${err.message}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -44,7 +50,7 @@ export default function ExamExport() {
       });
       message.success(`Excel 已导出: ${path}`);
     } catch (e) {
-      message.error(`导出失败: ${e}`);
+      message.error(`导出失败: ${normalizeError(e).message}`);
     } finally {
       setExporting(null);
     }

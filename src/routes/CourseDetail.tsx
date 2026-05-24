@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Table, Tabs, Typography, Button, Space, Card, Spin, Tag, message, Select } from 'antd';
+import { Table, Tabs, Typography, Button, Space, Card, Spin, Tag, message, Select, Input } from 'antd';
 import {
   DownloadOutlined,
   PlayCircleOutlined,
@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { useCourseStore } from '../stores/courseStore';
+import { normalizeError } from '../utils/errors';
 import type { Work, ExportResult } from '../types';
 
 const { Title } = Typography;
@@ -35,7 +36,15 @@ const LEAF_TYPE_OPTIONS = [
 export default function CourseDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { works, ppts, loading, fetchWorks, fetchPpts } = useCourseStore();
+  // 细粒度 selector
+  const works = useCourseStore((s) => s.works);
+  const ppts = useCourseStore((s) => s.ppts);
+  const worksLoading = useCourseStore((s) => s.worksLoading);
+  const pptsLoading = useCourseStore((s) => s.pptsLoading);
+  const fetchWorks = useCourseStore((s) => s.fetchWorks);
+  const fetchPpts = useCourseStore((s) => s.fetchPpts);
+  const setCourseContext = useCourseStore((s) => s.setCourseContext);
+
   const [exporting, setExporting] = useState<number | null>(null);
   const [chapterTasks, setChapterTasks] = useState<ChapterTask[]>([]);
   const [chapterLoading, setChapterLoading] = useState(false);
@@ -45,10 +54,16 @@ export default function CourseDetail() {
 
   useEffect(() => {
     if (id) {
+      // 切换到新课程时先清空旧 works/ppts，避免上一个课程的数据闪现
+      setCourseContext(id);
+      setChapterTasks([]);
+      setSelectedTaskIds([]);
+      setNameFilter('');
+      setTypeFilter([]);
       fetchWorks(id);
       fetchPpts(id);
     }
-  }, [id, fetchWorks, fetchPpts]);
+  }, [id, fetchWorks, fetchPpts, setCourseContext]);
 
   const fetchChapterTasks = async () => {
     if (!id) return;
@@ -57,7 +72,7 @@ export default function CourseDetail() {
       const tasks = await invoke<ChapterTask[]>('get_chapter_tasks', { courseId: id });
       setChapterTasks(tasks);
     } catch (e) {
-      message.error(`获取章节任务失败: ${e}`);
+      message.error(`获取章节任务失败: ${normalizeError(e).message}`);
     } finally {
       setChapterLoading(false);
     }
@@ -82,7 +97,7 @@ export default function CourseDetail() {
       });
       message.success(`答案已导出: ${path}`);
     } catch (e) {
-      message.error(`导出失败: ${e}`);
+      message.error(`导出失败: ${normalizeError(e).message}`);
     } finally {
       setExporting(null);
     }
@@ -100,7 +115,7 @@ export default function CourseDetail() {
       });
       message.success(result.message);
     } catch (e) {
-      message.error(`导出失败: ${e}`);
+      message.error(`导出失败: ${normalizeError(e).message}`);
     } finally {
       setExporting(null);
     }
@@ -237,7 +252,7 @@ export default function CourseDetail() {
       </div>
 
       <Card>
-        <Spin spinning={loading}>
+        <Spin spinning={worksLoading || pptsLoading}>
           <Tabs
             onChange={(key) => {
               if (key === 'chapters' && chapterTasks.length === 0) {
@@ -304,18 +319,12 @@ export default function CourseDetail() {
                           label: <Tag color={o.color}>{o.label}</Tag>,
                         }))}
                       />
-                      <input
+                      <Input
                         placeholder="搜索任务名称..."
                         value={nameFilter}
                         onChange={(e) => setNameFilter(e.target.value)}
-                        style={{
-                          padding: '4px 11px',
-                          border: '1px solid #d9d9d9',
-                          borderRadius: 6,
-                          outline: 'none',
-                          fontSize: 14,
-                          width: 180,
-                        }}
+                        allowClear
+                        style={{ width: 200 }}
                       />
 
                       <div style={{ flex: 1 }} />

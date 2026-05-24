@@ -9,7 +9,10 @@ const { Title } = Typography;
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { courses, loading, fetchCourses } = useCourseStore();
+  // 细粒度 selector，避免 works/ppts 等无关字段变化引起重渲染
+  const courses = useCourseStore((s) => s.courses);
+  const loading = useCourseStore((s) => s.coursesLoading);
+  const fetchCourses = useCourseStore((s) => s.fetchCourses);
 
   useEffect(() => {
     fetchCourses();

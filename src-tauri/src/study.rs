@@ -50,6 +50,9 @@ fn is_cancelled(cancel: &Arc<AtomicBool>) -> bool {
 }
 
 /// 构建心跳数据包
+///
+/// `user_id` / `video_id` 必须能解析为正整数，否则雨课堂会拒绝心跳并可能触发风控。
+/// 解析失败时返回错误，由上层中断当前任务。
 fn build_heartbeat(
     course_id: &str,
     video_id: &str,
@@ -57,7 +60,26 @@ fn build_heartbeat(
     sku_id: &str,
     user_id: &str,
     current_frame: i64,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, AppError> {
+    let user_id_num: i64 = user_id.parse().map_err(|_| {
+        AppError::ApiError(format!(
+            "用户 ID 非法（'{}'），无法发送心跳",
+            user_id
+        ))
+    })?;
+    if user_id_num <= 0 {
+        return Err(AppError::ApiError(format!(
+            "用户 ID 必须为正整数（实际 {}）",
+            user_id_num
+        )));
+    }
+    let video_id_num: i64 = video_id.parse().map_err(|_| {
+        AppError::ApiError(format!(
+            "视频 ID 非法（'{}'），无法发送心跳",
+            video_id
+        ))
+    })?;
+
     let ts = chrono::Utc::now().timestamp_millis();
     let mut rng = rand::rng();
     let mut data = Vec::new();
@@ -77,10 +99,10 @@ fn build_heartbeat(
             "cp": frame,
             "fp": 0, "tp": 0, "sp": 2,
             "ts": ts.to_string(),
-            "u": user_id.parse::<i64>().unwrap_or(0),
+            "u": user_id_num,
             "uip": "",
             "c": course_id,
-            "v": video_id.parse::<i64>().unwrap_or(0),
+            "v": video_id_num,
             "skuid": sku_id,
             "classroomid": classroom_id,
             "cc": video_id,
@@ -90,7 +112,7 @@ fn build_heartbeat(
             "t": "video"
         }));
     }
-    data
+    Ok(data)
 }
 
 /// 处理视频任务
@@ -116,6 +138,20 @@ async fn handle_video(
     let cid = leaf_info["data"]["course_id"].to_string().replace('"', "");
     let user_id = leaf_info["data"]["user_id"].to_string().replace('"', "");
     let sku_id = leaf_info["data"]["sku_id"].to_string().replace('"', "");
+
+    // 关键字段校验：解析失败立即终止，避免用 0 / 空字符串发送心跳触发风控
+    if user_id.is_empty() || user_id == "null" {
+        return Err(AppError::ApiError(format!(
+            "视频 '{}' 缺少 user_id，可能未登录或接口异常",
+            name
+        )));
+    }
+    if cid.is_empty() || cid == "null" {
+        return Err(AppError::ApiError(format!(
+            "视频 '{}' 缺少 course_id",
+            name
+        )));
+    }
 
     // 检查是否已完成
     let status = client.get_status(leaf_id, course_id).await?;
@@ -148,12 +184,12 @@ async fn handle_video(
             evt.status = "failed".into();
             evt.message = Some("已被用户停止".into());
             emit_task(app, evt);
-            return Err(AppError::General("用户停止".into()));
+            return Err(AppError::Cancelled);
         }
 
         let heartbeat = build_heartbeat(
             &cid, leaf_id, course_id, &sku_id, &user_id, video_frame,
-        );
+        )?;
         video_frame += LEARNING_RATE * HEARTBEAT_BATCH_SIZE;
 
         let resp_text = client.send_heartbeat(heartbeat).await?;
@@ -176,7 +212,7 @@ async fn handle_video(
             evt.status = "failed".into();
             evt.message = Some("已被用户停止".into());
             emit_task(app, evt);
-            return Err(AppError::General("用户停止".into()));
+            return Err(AppError::Cancelled);
         }
 
         // 获取最新进度
@@ -329,6 +365,9 @@ pub fn leaf_type_str(t: i32) -> &'static str {
 }
 
 /// 主入口：自动刷课（支持取消 + 自定义任务）
+///
+/// 进入时重置 `cancel`；外层 commands 层按 `course_id` 维护 cancel 标志，
+/// 多课程并发时互不干扰。
 pub async fn run_auto_study(
     app: AppHandle,
     client: RainClient,
@@ -336,7 +375,7 @@ pub async fn run_auto_study(
     cancel: Arc<AtomicBool>,
     task_ids: Option<Vec<i64>>,
 ) -> Result<(), AppError> {
-    // 重置取消标志
+    // 重置取消标志（同一课程二次启动场景）
     cancel.store(false, Ordering::Relaxed);
 
     // 获取章节数据

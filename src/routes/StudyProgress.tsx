@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Card, Typography, Button, Tag, Progress, List, Spin, message, Popconfirm, Alert } from 'antd';
+import { Card, Typography, Button, Tag, Progress, List, message, Popconfirm, Alert } from 'antd';
 import {
   ArrowLeftOutlined,
   PlayCircleOutlined,
@@ -8,8 +8,10 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import type { Event } from '@tauri-apps/api/event';
 import type { TaskUpdateEvent } from '../types';
+import { useTauriListens } from '../utils/useTauriListens';
+import { normalizeError } from '../utils/errors';
 
 const { Title, Text } = Typography;
 
@@ -48,52 +50,55 @@ export default function StudyProgress() {
     return () => clearInterval(timer);
   }, [running, startTime]);
 
-  useEffect(() => {
-    const unlistenUpdate = listen<TaskUpdateEvent>('study-task-update', (event) => {
-      const p = event.payload;
-      setCurrentIndex(p.index);
-      if (p.total > 0) setTotalTasks(p.total);
-      setTasks((prev) => {
-        const copy = [...prev];
-        const existing = copy.findIndex((t) => t.index === p.index);
-        const task: Task = {
-          index: p.index,
-          name: p.name,
-          type_str: p.type_str,
-          status: p.status as Task['status'],
-          progress: p.progress,
-          message: p.message,
-        };
-        if (existing >= 0) {
-          copy[existing] = task;
-        } else {
-          copy.push(task);
-        }
-        return copy;
-      });
-    });
+  // 安全订阅 Tauri 事件，修复 StrictMode 下 listen cleanup 竞态导致的双重监听
+  useTauriListens([
+    {
+      event: 'study-task-update',
+      handler: (event: Event<unknown>) => {
+        const p = event.payload as TaskUpdateEvent;
+        setCurrentIndex(p.index);
+        if (p.total > 0) setTotalTasks(p.total);
+        setTasks((prev) => {
+          const copy = [...prev];
+          const existing = copy.findIndex((t) => t.index === p.index);
+          const task: Task = {
+            index: p.index,
+            name: p.name,
+            type_str: p.type_str,
+            status: p.status as Task['status'],
+            progress: p.progress,
+            message: p.message,
+          };
+          if (existing >= 0) {
+            copy[existing] = task;
+          } else {
+            copy.push(task);
+          }
+          return copy;
+        });
+      },
+    },
+    {
+      event: 'study-complete',
+      handler: () => {
+        setRunning(false);
+        setStopping(false);
+        message.success('所有任务处理完毕');
+      },
+    },
+    {
+      event: 'study-stopped',
+      handler: () => {
+        setRunning(false);
+        setStopping(false);
+        message.warning('刷课已停止');
+      },
+    },
+  ]);
 
-    const unlistenComplete = listen('study-complete', () => {
-      setRunning(false);
-      setStopping(false);
-      message.success('所有任务处理完毕');
-    });
-
-    const unlistenStopped = listen('study-stopped', () => {
-      setRunning(false);
-      setStopping(false);
-      message.warning('刷课已停止');
-    });
-
-    return () => {
-      unlistenUpdate.then((fn) => fn());
-      unlistenComplete.then((fn) => fn());
-      unlistenStopped.then((fn) => fn());
-    };
-  }, []);
-
-  const startStudy = async () => {
+  const startStudy = useCallback(async () => {
     if (!id) return;
+    if (running || stopping) return; // 防止重复点击
     setRunning(true);
     setStopping(false);
     setTasks([]);
@@ -106,24 +111,25 @@ export default function StudyProgress() {
         taskIds: customTaskIds ?? null,
       });
     } catch (e) {
-      if (!stopping) {
-        message.error(`启动失败: ${e}`);
+      const err = normalizeError(e);
+      if (err.code !== 'CANCELLED' && !stopping) {
+        message.error(`启动失败: ${err.message}`);
       }
       setRunning(false);
       setStopping(false);
     }
-  };
+  }, [id, running, stopping, customTaskIds]);
 
-  const stopStudy = async () => {
+  const stopStudy = useCallback(async () => {
     setStopping(true);
     try {
-      await invoke('stop_auto_study');
+      await invoke('stop_auto_study', { courseId: id });
       message.info('正在停止刷课...');
     } catch (e) {
-      message.error(`停止失败: ${e}`);
+      message.error(`停止失败: ${normalizeError(e).message}`);
       setStopping(false);
     }
-  };
+  }, [id]);
 
   const statusTag = (status: string) => {
     const map: Record<string, { color: string; text: string }> = {
@@ -168,7 +174,8 @@ export default function StudyProgress() {
           >
             <Button
               danger
-              icon={stopping ? <Spin size="small" /> : <StopOutlined />}
+              icon={<StopOutlined />}
+              loading={stopping}
               disabled={stopping}
             >
               {stopping ? '正在停止...' : '停止刷课'}
@@ -179,6 +186,7 @@ export default function StudyProgress() {
             type="primary"
             icon={<PlayCircleOutlined />}
             onClick={startStudy}
+            disabled={running || stopping}
           >
             开始刷课
           </Button>

@@ -39,3 +39,6 @@ desktop.ini
 .env
 .env.*
 !.env.example
+
+# Claude Code 临时目录
+.claude/
