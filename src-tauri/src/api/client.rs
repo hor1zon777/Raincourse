@@ -1,10 +1,12 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use reqwest::cookie::CookieStore;
 use reqwest::header::{HeaderMap, HeaderValue, COOKIE, REFERER, USER_AGENT};
-use reqwest::{Client, cookie::Jar};
+use reqwest::Client;
 use serde_json::Value;
 
+use crate::api::jar::DomainAwareJar;
 use crate::error::AppError;
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0";
@@ -16,12 +18,12 @@ const MOOC_BASE_URL: &str = "https://wyuyjs.yuketang.cn";
 #[derive(Clone)]
 pub struct RainClient {
     pub client: Client,
-    pub jar: Arc<Jar>,
+    pub jar: Arc<DomainAwareJar>,
 }
 
 impl RainClient {
     pub fn new() -> Self {
-        let jar = Arc::new(Jar::default());
+        let jar = DomainAwareJar::new();
         let client = Client::builder()
             .cookie_provider(jar.clone())
             .user_agent(UA)
@@ -79,6 +81,26 @@ impl RainClient {
             .cookies(&url)
             .and_then(|c| c.to_str().ok().map(|s| s.to_string()))
             .unwrap_or_default()
+    }
+
+    /// 按域分组导出 jar 中**当前有效**的 cookie。
+    ///
+    /// 直接遍历 `DomainAwareJar` 的内部 store，确保拿到**所有**域、所有 cookie，
+    /// 不再依赖预设的域名列表 → 即使雨课堂在 `changjie.yuketang.cn` 等
+    /// 我们没列出的子域设了 cookie，也能完整持久化。
+    pub fn dump_cookies_by_domain(&self) -> HashMap<String, HashMap<String, String>> {
+        self.jar.dump_all()
+    }
+
+    /// 把按域分组的 cookies 加载回 jar。
+    ///
+    /// 与 `dump_cookies_by_domain` 互为反操作；每个 cookie 按其原域名挂载，
+    /// 不会出现"把 yuketang.cn 的 sessionid 同时塞到 xuetangx.com"那种污染。
+    pub fn load_cookies_by_domain(
+        &self,
+        cookies_by_domain: &HashMap<String, HashMap<String, String>>,
+    ) {
+        self.jar.load_all(cookies_by_domain);
     }
 
     /// 构建带 CSRF 的通用请求头

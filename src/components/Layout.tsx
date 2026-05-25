@@ -92,7 +92,11 @@ export default function AppLayout() {
           {userInfo && (
             <Dropdown menu={userMenu} placement="bottomRight">
               <Space style={{ cursor: 'pointer' }}>
-                <Avatar size="small" icon={<UserOutlined />} />
+                <Avatar
+                  size="small"
+                  src={userInfo.avatar || undefined}
+                  icon={<UserOutlined />}
+                />
                 <Text>{userInfo.name}</Text>
               </Space>
             </Dropdown>

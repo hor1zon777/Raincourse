@@ -3,6 +3,8 @@ export interface UserInfo {
   user_id: number;
   name: string;
   school?: string;
+  /** 头像 URL，雨课堂返回字段名不一，可能是 head_image_url / avatar / head_url 等 */
+  avatar?: string;
 }
 
 // 课程

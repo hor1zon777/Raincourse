@@ -90,14 +90,31 @@ export const useAuthStore = create<AuthState>((set) => ({
   startQrLogin: async () => {
     set({ loading: true, error: null });
     try {
-      await invoke('start_qr_login');
-      const resp = await invoke<unknown>('get_user_info');
+      // 后端 start_qr_login 现在直接返回 user_info（避免前端再发一次冗余请求，
+      // 也避免 emit("login-success") 后前端再去调 get_user_info 时遇到 cookie
+      // 时序问题）
+      const resp = await invoke<unknown>('start_qr_login');
       const user = parseUserInfo(resp);
       if (user) {
         set({ isLoggedIn: true, userInfo: user, loading: false });
       } else {
+        // 兜底：极少数情况下后端返回的格式 parseUserInfo 也认不出来时，
+        // 直接调一次 get_user_info 兜底，仍失败才报错
+        try {
+          const fallback = await invoke<unknown>('get_user_info');
+          const u2 = parseUserInfo(fallback);
+          if (u2) {
+            set({ isLoggedIn: true, userInfo: u2, loading: false });
+            return;
+          }
+        } catch (e) {
+          console.warn('startQrLogin 兜底 get_user_info 也失败:', e);
+        }
         set({ loading: false });
-        throw { code: 'GENERAL_ERROR', message: '扫码登录后未能获取用户信息，请重试' };
+        throw {
+          code: 'GENERAL_ERROR',
+          message: '扫码登录成功，但解析用户信息失败，请重试',
+        };
       }
     } catch (e) {
       const err = normalizeError(e);
