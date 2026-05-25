@@ -13,6 +13,7 @@ const StudyProgress = lazy(() => import('./routes/StudyProgress'));
 const AnswerFiles = lazy(() => import('./routes/AnswerFiles'));
 const ExamExport = lazy(() => import('./routes/ExamExport'));
 const Settings = lazy(() => import('./routes/Settings'));
+const About = lazy(() => import('./routes/About'));
 
 function PageFallback() {
   return (
@@ -69,6 +70,7 @@ export default function App() {
                 <Route path="/answers" element={<AnswerFiles />} />
                 <Route path="/export" element={<ExamExport />} />
                 <Route path="/settings" element={<Settings />} />
+                <Route path="/about" element={<About />} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

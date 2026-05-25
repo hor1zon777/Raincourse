@@ -9,6 +9,7 @@ import {
   PlayCircleOutlined,
   UserOutlined,
   LogoutOutlined,
+  InfoCircleOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../stores/authStore';
 
@@ -20,6 +21,7 @@ const menuItems = [
   { key: '/answers', icon: <FileTextOutlined />, label: '答案文件' },
   { key: '/export', icon: <ExportOutlined />, label: '数据导出' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
+  { key: '/about', icon: <InfoCircleOutlined />, label: '关于' },
 ];
 
 export default function AppLayout() {

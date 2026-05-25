@@ -1,0 +1,96 @@
+name: Build & Release
+
+# 触发：
+#   - 推送 v* 标签   → 构建并发布到 GitHub Release（草稿）
+#   - 推送 main / PR → CI 构建验证，产物作为 artifact 保留 14 天
+#   - 手动           → 通过 workflow_dispatch 触发
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支/PR 上新一次推送会取消上一次未完成的运行，避免堆积
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows (NSIS)
+    runs-on: windows-latest
+    # 创建 Release / 上传 asset 需要写入仓库
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # pnpm 必须在 setup-node 之前安装，setup-node 才能正确启用 pnpm 缓存
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust 增量编译缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          # 不同事件类型分桶，避免 PR 与 main 互相污染
+          shared-key: tauri-windows-${{ github.event_name }}
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      # ──────────────────── tag 推送：构建 + 发布 Release ────────────────────
+      # tauri-action 会读取 src-tauri/tauri.conf.json 的 version，
+      # 自动创建 / 更新 Release，并把 bundle 产物（.exe）上传为 asset。
+      - name: 构建并发布到 Release（tag 触发）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: '雨课堂助手 ${{ github.ref_name }}'
+          releaseBody: |
+            ## 安装
+
+            下载下方的 `*-setup.exe` 直接运行即可（Windows 10/11 x64）。
+
+            完整变更请查看 [Commits](../../commits/${{ github.ref_name }})。
+
+            ---
+            ⚠️ 本工具仅供个人学习与研究使用，使用产生的所有后果由使用者自行承担。
+          # 默认 Draft，确认无误后再到 Release 页面手动 Publish
+          releaseDraft: true
+          prerelease: false
+
+      # ──────────────────── 非 tag：仅 CI 构建并上传 artifact ────────────────────
+      - name: 构建（CI 验证）
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: pnpm tauri build
+
+      - name: 上传 NSIS 安装包（CI artifact）
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: raincourse-windows-${{ github.sha }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
+          if-no-files-found: error
+          retention-days: 14
