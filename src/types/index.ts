@@ -83,3 +83,57 @@ export interface LoginSuccessEvent {
   school: string;
   auth: string;
 }
+
+// AI 配置（保存用，含明文 api_key；从前端发往后端，留空表示不修改）
+export interface AiConfig {
+  base_url: string;
+  model: string;
+  enabled: boolean;
+  api_key: string;
+}
+
+// AI 配置（读取用，后端屏蔽 api_key）
+export interface AiConfigView {
+  base_url: string;
+  model: string;
+  enabled: boolean;
+  has_api_key: boolean;
+}
+
+// 自动答题逐题进度事件（quiz-answer-progress）
+export interface QuizAnswerEvent {
+  index: number;
+  total: number;
+  problem_id: string;
+  /** running | done | failed | skipped */
+  status: string;
+  /** 答案来源：local（题库）| ai */
+  source?: 'local' | 'ai' | null;
+  is_correct?: boolean | null;
+  message?: string | null;
+}
+
+// 自动答题汇总结果（命令返回 + quiz-answer-complete）
+export interface QuizAnswerResult {
+  total: number;
+  submitted: number;
+  correct: number;
+  from_local: number;
+  from_ai: number;
+  failed: number;
+  skipped: number;
+}
+
+// 课程学习进度（get_learn_schedule）；leaf_schedules 按 leaf_id 索引：1=完成、0=未完成、测验为浮点完成度
+export interface LearnSchedule {
+  leaf_schedules: Record<string, number>;
+  total_schedule: number;
+}
+
+// 本地已导出测验的得分汇总（get_quiz_scores 返回 Record<string, QuizScore>，key=leaf_id）
+export interface QuizScore {
+  score: number;
+  total: number;
+  answered: number;
+  count: number;
+}

@@ -42,3 +42,6 @@ desktop.ini
 
 # Claude Code 临时目录
 .claude/
+
+# 临时分析脚本 / 抓包与导出样本（含个人学习数据，不入库）
+tmp/

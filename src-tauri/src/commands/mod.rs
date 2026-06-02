@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::api::client::RainClient;
 use crate::error::AppError;
@@ -15,6 +15,14 @@ use crate::session::manager as sess;
 use crate::storage::json_store;
 use crate::study::{self, ChapterTask};
 use crate::{excel, ws};
+
+use std::time::Duration;
+use serde::Serialize;
+use tokio::time::sleep;
+
+use crate::ai::client::AiClient;
+use crate::ai::config::{self as ai_config, AiConfig};
+use crate::ai::encode::{self, ProblemType};
 
 /// 全局应用状态。
 ///
@@ -86,6 +94,18 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
     app.path()
         .app_data_dir()
         .map_err(|e| AppError::Config(format!("无法获取应用数据目录: {}", e)))
+}
+
+/// 把 JSON 值取成字符串，兼容「数字或字符串」两种类型；null 返回空串。
+///
+/// 雨课堂部分字段（如 leaf_type_id / sku_id）在不同响应里可能是数字或字符串，
+/// 与 `export_work_answers` 对 `user_id` 的兼容处理保持一致。
+fn json_str_or_num(v: &Value) -> String {
+    match v.as_str() {
+        Some(s) => s.to_string(),
+        None if v.is_null() => String::new(),
+        None => v.to_string().replace('"', ""),
+    }
 }
 
 // ========== 认证 Commands ==========
@@ -449,6 +469,64 @@ pub async fn export_work_answers(
     }
 }
 
+/// 导出章节「测验/练习」（leaf_type=6）的答案。
+///
+/// 与作业/考试不同，章节测验走 MOOC 平台：
+/// `get_course_sign` → `get_leaf_info`（取 leaf_type_id + sku_id）→ `get_exercise_list` → 落盘。
+#[tauri::command]
+pub async fn export_quiz_answers(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    course_id: String,
+    leaf_id: String,
+    quiz_name: String,
+) -> Result<String, AppError> {
+    let client = state.snapshot_client();
+
+    // 1. 课程签名
+    let sign_resp = client.get_course_sign(&course_id).await?;
+    let course_sign = sign_resp["data"]["course_sign"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    // 2. 叶子信息：取 leaf_type_id 与 sku_id（可能是数字或字符串）
+    let leaf_info = client
+        .get_leaf_info(&leaf_id, &course_id, &course_sign)
+        .await?;
+    let leaf_type_id = json_str_or_num(&leaf_info["data"]["content_info"]["leaf_type_id"]);
+    let sku_id = json_str_or_num(&leaf_info["data"]["sku_id"]);
+    if leaf_type_id.is_empty() || sku_id.is_empty() {
+        return Err(AppError::ApiError(
+            "无法获取该测验信息（缺少 leaf_type_id 或 sku_id），请确认该项为测验/练习".into(),
+        ));
+    }
+
+    // 3. 拉取练习题与答案
+    let resp = client
+        .get_exercise_list(&course_id, &leaf_type_id, &sku_id)
+        .await?;
+
+    // 4. 保守校验响应有效（不臆测具体子字段名）
+    if resp["success"].as_bool() == Some(false) || resp.get("data").map_or(true, |d| d.is_null()) {
+        return Err(AppError::ApiError(
+            "未获取到练习题，请确认该账号可查看该测验".into(),
+        ));
+    }
+
+    // 5. 落盘到 answer 目录；加 quiz_ 前缀避免与作业文件名冲突
+    let app_data_dir = app_data_dir(&app)?;
+    let dir = json_store::get_answer_dir(&app_data_dir)?;
+    let info = serde_json::json!({
+        "exam_id": leaf_id,
+        "exam_name": quiz_name,
+        "exam_type": "章节测验"
+    });
+    let filename = format!("quiz_{}", leaf_id);
+    let path = json_store::save_json(&dir, &filename, &resp, &info)?;
+    Ok(path)
+}
+
 #[tauri::command]
 pub async fn export_exam_data(
     app: AppHandle,
@@ -537,6 +615,70 @@ pub async fn export_exam_data(
 pub async fn get_answer_files(app: AppHandle) -> Result<Vec<Value>, AppError> {
     let app_data_dir = app_data_dir(&app)?;
     Ok(json_store::list_answer_files(&app_data_dir))
+}
+
+/// 获取课程学习进度：每个 leaf 的完成度 + 整体完成度。
+///
+/// 返回 `{ leaf_schedules: {leaf_id: 0|1|浮点}, total_schedule: 0~1 }`。
+/// 前端按 leaf_id 匹配测验/章节任务展示「完成情况」。
+#[tauri::command]
+pub async fn get_learn_schedule(
+    state: State<'_, AppState>,
+    course_id: String,
+) -> Result<Value, AppError> {
+    let client = state.snapshot_client();
+    let sign_resp = client.get_course_sign(&course_id).await?;
+    let course_sign = sign_resp["data"]["course_sign"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let resp = client.get_course_schedule(&course_id, &course_sign).await?;
+    Ok(serde_json::json!({
+        "leaf_schedules": resp["data"]["leaf_schedules"].clone(),
+        "total_schedule": resp["data"]["total_schedule"].clone(),
+    }))
+}
+
+/// 汇总本地已导出的章节测验得分：扫描 answer 目录全部 `quiz_*.json`。
+///
+/// 返回 `{ "leaf_id": {score,total,answered,count} }`；leaf_id 取文件名
+/// 去 `quiz_` 前缀与 `.json` 后缀。零额外网络请求（仅读本地导出文件）。
+#[tauri::command]
+pub async fn get_quiz_scores(app: AppHandle) -> Result<Value, AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    let dir = json_store::get_answer_dir(&app_data_dir)?;
+    let mut out = serde_json::Map::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let fname = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if !fname.starts_with("quiz_") || !fname.ends_with(".json") {
+                continue;
+            }
+            let leaf_id = fname
+                .trim_start_matches("quiz_")
+                .trim_end_matches(".json")
+                .to_string();
+            if leaf_id.is_empty() {
+                continue;
+            }
+            if let Ok(data) = json_store::load_json(&dir, &fname) {
+                let (score, total, answered, count) = encode::summarize_quiz(&data);
+                out.insert(
+                    leaf_id,
+                    serde_json::json!({
+                        "score": score,
+                        "total": total,
+                        "answered": answered,
+                        "count": count,
+                    }),
+                );
+            }
+        }
+    }
+    Ok(Value::Object(out))
 }
 
 // ========== 章节 Commands ==========
@@ -687,6 +829,317 @@ pub async fn get_exam_files(app: AppHandle) -> Result<Vec<Value>, AppError> {
         })
         .collect();
 
+    Ok(result)
+}
+
+// ========== AI 自动答题 Commands ==========
+
+/// 自动答题逐题进度事件（emit: "quiz-answer-progress"）。
+#[derive(Clone, Serialize)]
+pub struct QuizAnswerEvent {
+    pub index: usize,
+    pub total: usize,
+    pub problem_id: String,
+    /// running | done | failed | skipped
+    pub status: String,
+    /// "local"（题库）| "ai" | None
+    pub source: Option<String>,
+    pub is_correct: Option<bool>,
+    pub message: Option<String>,
+}
+
+/// 自动答题汇总结果（命令返回 + emit: "quiz-answer-complete"）。
+#[derive(Clone, Serialize)]
+pub struct QuizAnswerResult {
+    pub total: usize,
+    pub submitted: usize,
+    pub correct: usize,
+    pub from_local: usize,
+    pub from_ai: usize,
+    pub failed: usize,
+    pub skipped: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_quiz_progress(
+    app: &AppHandle,
+    index: usize,
+    total: usize,
+    problem_id: &str,
+    status: &str,
+    source: Option<&str>,
+    is_correct: Option<bool>,
+    message: Option<String>,
+) {
+    let evt = QuizAnswerEvent {
+        index,
+        total,
+        problem_id: problem_id.to_string(),
+        status: status.to_string(),
+        source: source.map(|s| s.to_string()),
+        is_correct,
+        message,
+    };
+    let _ = app.emit("quiz-answer-progress", evt);
+}
+
+/// 从 problem_apply 响应解析是否答对；字段路径待联调，解析不出返回 None。
+///
+/// 同平台读取接口用 `is_right` 标记正误，提交响应大概率同名，故多路径容错：
+/// `data.is_correct` / `data.is_right` / `data.correct` 及对应顶层字段。
+fn parse_is_correct(resp: &Value) -> Option<bool> {
+    const PATHS: &[&[&str]] = &[
+        &["data", "is_correct"],
+        &["data", "is_right"],
+        &["data", "correct"],
+        &["is_correct"],
+        &["is_right"],
+        &["correct"],
+    ];
+    for path in PATHS {
+        let mut cur = resp;
+        let mut ok = true;
+        for seg in *path {
+            match cur.get(*seg) {
+                Some(n) => cur = n,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            if let Some(b) = cur.as_bool() {
+                return Some(b);
+            }
+        }
+    }
+    None
+}
+
+/// 保存 AI 配置；若传入 api_key 为空且已有旧配置，则沿用旧 key（前端不回传明文）。
+#[tauri::command]
+pub async fn save_ai_config(app: AppHandle, config: AiConfig) -> Result<(), AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    let mut cfg = config;
+    if cfg.api_key.trim().is_empty() {
+        if let Ok(Some(old)) = ai_config::load_ai_config(&app_data_dir) {
+            cfg.api_key = old.api_key;
+        }
+    }
+    ai_config::save_ai_config(&app_data_dir, &cfg)
+}
+
+/// 读取 AI 配置（屏蔽 api_key，仅返回是否已配置）。
+#[tauri::command]
+pub async fn get_ai_config(app: AppHandle) -> Result<Value, AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    let cfg = ai_config::load_ai_config(&app_data_dir)?.unwrap_or_default();
+    Ok(serde_json::json!({
+        "base_url": cfg.base_url,
+        "model": cfg.model,
+        "enabled": cfg.enabled,
+        "has_api_key": !cfg.api_key.trim().is_empty(),
+    }))
+}
+
+/// 停止指定测验的自动答题。
+#[tauri::command]
+pub async fn stop_quiz_auto_answer(
+    state: State<'_, AppState>,
+    leaf_id: String,
+) -> Result<(), AppError> {
+    state.cancel_course(&format!("quiz:{}", leaf_id));
+    Ok(())
+}
+
+/// 章节测验自动答题：拉题 → 题库优先 / AI 兜底 →（非 dry_run 则）逐题提交。
+///
+/// 全程串行（复用 AppState 单 client + 同一 cookie jar），逐题 emit 进度，
+/// 限速 ≥1 题/秒；单题失败 / 跳过隔离，不中断整体；支持取消。
+/// `dry_run=true` 时只生成并展示答案、**不提交**（联调护栏）。
+#[tauri::command]
+pub async fn start_quiz_auto_answer(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    course_id: String,
+    leaf_id: String,
+    dry_run: bool,
+) -> Result<QuizAnswerResult, AppError> {
+    let client = state.snapshot_client();
+    let app_data_dir = app_data_dir(&app)?;
+
+    // 取消令牌：以 quiz:{leaf_id} 维度，避免与刷课的 course_id 键冲突
+    let cancel = state.get_or_create_cancel(&format!("quiz:{}", leaf_id));
+    cancel.store(false, Ordering::Relaxed);
+
+    // 1. 课程签名 + 叶子信息（复用 export_quiz_answers 前半段链路）
+    let sign_resp = client.get_course_sign(&course_id).await?;
+    let course_sign = sign_resp["data"]["course_sign"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let leaf_info = client
+        .get_leaf_info(&leaf_id, &course_id, &course_sign)
+        .await?;
+    let leaf_type_id = json_str_or_num(&leaf_info["data"]["content_info"]["leaf_type_id"]);
+    let sku_id = json_str_or_num(&leaf_info["data"]["sku_id"]);
+    if leaf_type_id.is_empty() || sku_id.is_empty() {
+        return Err(AppError::ApiError(
+            "无法获取该测验信息（缺少 leaf_type_id 或 sku_id），请确认该项为测验/练习".into(),
+        ));
+    }
+
+    // 2. 拉取现场题目列表
+    let exercise = client
+        .get_exercise_list(&course_id, &leaf_type_id, &sku_id)
+        .await?;
+    if exercise["success"].as_bool() == Some(false)
+        || exercise.get("data").map_or(true, |d| d.is_null())
+    {
+        return Err(AppError::ApiError(
+            "未获取到练习题，请确认该账号可查看该测验".into(),
+        ));
+    }
+    let problems: Vec<Value> = encode::find_problems(&exercise)
+        .map(|v| v.into_iter().cloned().collect())
+        .unwrap_or_default();
+
+    // 3. 加载本地题库（可不存在）
+    let answer_dir = json_store::get_answer_dir(&app_data_dir)?;
+    let local_bank: Option<Value> =
+        json_store::load_json(&answer_dir, &format!("quiz_{}", leaf_id)).ok();
+
+    // 4. AI 配置（仅启用且齐全时构造 client）
+    let ai_client = ai_config::load_ai_config(&app_data_dir)
+        .ok()
+        .flatten()
+        .filter(|c| c.is_usable())
+        .map(AiClient::new);
+
+    let total = problems.len();
+    let mut result = QuizAnswerResult {
+        total,
+        submitted: 0,
+        correct: 0,
+        from_local: 0,
+        from_ai: 0,
+        failed: 0,
+        skipped: 0,
+    };
+
+    for (i, p) in problems.iter().enumerate() {
+        // 限速 + 取消检查（除第一题外，每题前 sleep 1100ms ≈ ≤1 题/秒）
+        if i > 0 {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = app.emit("quiz-answer-stopped", serde_json::json!({"message":"已停止"}));
+                break;
+            }
+            sleep(Duration::from_millis(1100)).await;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            let _ = app.emit("quiz-answer-stopped", serde_json::json!({"message":"已停止"}));
+            break;
+        }
+
+        let idx = i + 1;
+        let problem_id = match encode::extract_problem_id(p) {
+            Some(id) => id,
+            None => {
+                result.skipped += 1;
+                emit_quiz_progress(&app, idx, total, "", "skipped", None, None, Some("无法识别题目 ID".into()));
+                continue;
+            }
+        };
+        emit_quiz_progress(&app, idx, total, &problem_id, "running", None, None, None);
+
+        // 答案来源：题库优先
+        let mut answer: Option<Value> = None;
+        let mut source: Option<&str> = None;
+        if let Some(bank) = &local_bank {
+            if let Some(a) = encode::lookup_local(&problem_id, bank) {
+                answer = Some(a);
+                source = Some("local");
+            }
+        }
+        // AI 兜底
+        if answer.is_none() {
+            if let Some(ai) = &ai_client {
+                match ProblemType::from_question(p) {
+                    Some(qtype) => {
+                        let body = encode::extract_body(p);
+                        let options = encode::extract_options(p);
+                        match ai.solve_objective(&body, &options, qtype).await {
+                            Ok(raw) => match encode::encode_ai_answer(&raw, qtype) {
+                                Ok(enc) => {
+                                    answer = Some(enc);
+                                    source = Some("ai");
+                                }
+                                Err(e) => {
+                                    result.skipped += 1;
+                                    emit_quiz_progress(&app, idx, total, &problem_id, "skipped", Some("ai"), None, Some(format!("AI 答案解析失败: {}", e)));
+                                    continue;
+                                }
+                            },
+                            Err(e) => {
+                                result.failed += 1;
+                                emit_quiz_progress(&app, idx, total, &problem_id, "failed", Some("ai"), None, Some(format!("AI 调用失败: {}", e)));
+                                continue;
+                            }
+                        }
+                    }
+                    None => {
+                        result.skipped += 1;
+                        emit_quiz_progress(&app, idx, total, &problem_id, "skipped", None, None, Some("无法识别题型".into()));
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let answer = match answer {
+            Some(a) => a,
+            None => {
+                result.skipped += 1;
+                let reason = if ai_client.is_some() {
+                    "题库未命中且 AI 未能作答"
+                } else {
+                    "题库未命中且未启用 AI"
+                };
+                emit_quiz_progress(&app, idx, total, &problem_id, "skipped", None, None, Some(reason.into()));
+                continue;
+            }
+        };
+
+        // dry_run：只展示将提交的内容，不真正提交
+        if dry_run {
+            emit_quiz_progress(&app, idx, total, &problem_id, "done", source, None, Some(format!("[试跑] 将提交: {}", answer)));
+            continue;
+        }
+
+        // 提交
+        match client.post_exercise_answer(&course_id, &problem_id, &answer).await {
+            Ok(resp) => {
+                result.submitted += 1;
+                match source {
+                    Some("local") => result.from_local += 1,
+                    Some("ai") => result.from_ai += 1,
+                    _ => {}
+                }
+                let is_correct = parse_is_correct(&resp);
+                if is_correct == Some(true) {
+                    result.correct += 1;
+                }
+                emit_quiz_progress(&app, idx, total, &problem_id, "done", source, is_correct, None);
+            }
+            Err(e) => {
+                result.failed += 1;
+                emit_quiz_progress(&app, idx, total, &problem_id, "failed", source, None, Some(format!("提交失败: {}", e)));
+            }
+        }
+    }
+
+    let _ = app.emit("quiz-answer-complete", result.clone());
     Ok(result)
 }
 

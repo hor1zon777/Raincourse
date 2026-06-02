@@ -491,6 +491,32 @@ impl RainClient {
         Ok(resp)
     }
 
+    /// 获取课程学习进度。
+    ///
+    /// 与 `get_all_chapter` 同参数（cid + sign + term + uv_id + classroom_headers），
+    /// 仅接口 path 为 `course/schedule`。返回 `data.leaf_schedules{leaf_id: 完成度}`
+    /// （1=完成、0=未完成、测验为浮点完成度）与 `data.total_schedule`（整体完成度 0~1）。
+    pub async fn get_course_schedule(
+        &self,
+        class_id: &str,
+        course_sign: &str,
+    ) -> Result<Value, AppError> {
+        let uv_id = self.get_cookie_value("uv_id").unwrap_or_default();
+        let url = format!(
+            "{}/mooc-api/v1/lms/learn/course/schedule?cid={}&sign={}&term=latest&uv_id={}",
+            BASE_URL, class_id, course_sign, uv_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.classroom_headers(class_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
     pub async fn get_leaf_info(
         &self,
         leaf_id: &str,
@@ -545,6 +571,74 @@ impl RainClient {
             .client
             .get(&url)
             .headers(self.classroom_headers(class_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    /// 获取章节测验/练习（leaf_type=6）的题目与答案列表。
+    ///
+    /// 与 examination 平台的作业/考试不同，章节测验走 MOOC 平台：
+    /// 先由 `get_leaf_info` 拿到 `leaf_type_id` 与 `sku_id`，再请求本接口。
+    pub async fn get_exercise_list(
+        &self,
+        class_id: &str,
+        leaf_type_id: &str,
+        sku_id: &str,
+    ) -> Result<Value, AppError> {
+        let uv_id = self.get_cookie_value("uv_id").unwrap_or_default();
+        let url = format!(
+            "{}/mooc-api/v1/lms/exercise/get_exercise_list/{}/{}/?term=latest&uv_id={}",
+            MOOC_BASE_URL, leaf_type_id, sku_id, uv_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.classroom_headers(class_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    /// 提交章节测验/练习（leaf_type=6）单题答案。
+    ///
+    /// URL / body / headers 已按真实抓包（HAR）校准：
+    /// `POST {BASE_URL}/mooc-api/v1/lms/exercise/problem_apply/`（host=www，无 query），
+    /// body `{classroom_id, problem_id, answer}`（前两者为数字，answer 为字符串数组
+    /// 如 `["true"]` / `["A","B"]`），复用 `classroom_headers`（含 X-Csrftoken +
+    /// Classroom-Id + Xtbz），补 Content-Type。
+    /// `class_id` 实为 classroom_id（前端路由 id 即 classroom_id，见 Dashboard 跳转）。
+    pub async fn post_exercise_answer(
+        &self,
+        class_id: &str,
+        problem_id: &str,
+        answer: &Value,
+    ) -> Result<Value, AppError> {
+        let url = format!("{}/mooc-api/v1/lms/exercise/problem_apply/", BASE_URL);
+        let mut headers = self.classroom_headers(class_id);
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json;charset=UTF-8"),
+        );
+        // id 类字段优先以数字提交（真实 problem_id 在响应中为数字），纯数字串转 Number，
+        // 否则退回字符串。待联调：若服务端要求字符串可在此调整。
+        let id_value = |s: &str| -> Value {
+            s.parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::String(s.to_string()))
+        };
+        let body = serde_json::json!({
+            "classroom_id": id_value(class_id),
+            "problem_id": id_value(problem_id),
+            "answer": answer,
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&body)
             .send()
             .await?
             .json::<Value>()

@@ -1,0 +1,20 @@
+# Cargo 构建配置
+#
+# 【为什么需要这个文件】
+# 本机为 20 逻辑核心，cargo 默认按核心数并行启动 rustc。
+# 在 release（opt-level=3）下单个 rustc 内存峰值很高，20 个进程同时编译
+# reqwest / rustls / tokio / tauri / windows-* 等重型 crate 时，
+# 瞬时内存需求远超物理内存 + 页面文件的提交上限，Windows 会拒绝分配并报：
+#   - os error 1450  系统资源不足（ERROR_NO_SYSTEM_RESOURCES）
+#   - os error 1453  工作集配额不足（ERROR_WORKING_SET_QUOTA）
+#   - exit code 0xc0000409  rustc 子进程被击崩（STATUS_STACK_BUFFER_OVERRUN）
+# 表现为 `pnpm tauri build` 失败，而 `cargo check`（dev profile）正常。
+#
+# 【取值说明】
+# jobs = 4 对以下环境均安全：
+#   - 本机 32GB 内存：4 个 release rustc 峰值远低于物理内存，稳定编过
+#   - GitHub Actions windows-latest（4 核 / 16GB）：等于核心数，标准配置
+# 本机若想更快，可临时用环境变量覆盖（不污染仓库配置）：
+#   CARGO_BUILD_JOBS=8 pnpm tauri build
+[build]
+jobs = 4
