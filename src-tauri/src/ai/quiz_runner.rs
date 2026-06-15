@@ -33,6 +33,9 @@ pub struct QuizAnswerResult {
     pub total: usize,
     pub submitted: usize,
     pub correct: usize,
+    /// 服务端即时返回了正误判定的题数（答对 + 答错；未公布答案的测验为 0）。
+    /// 正确率分母应取此值而非 `submitted`，避免把「未判定」误算成答错。
+    pub judged: usize,
     pub from_local: usize,
     pub from_ai: usize,
     pub failed: usize,
@@ -47,6 +50,7 @@ impl QuizAnswerResult {
             total,
             submitted: 0,
             correct: 0,
+            judged: 0,
             from_local: 0,
             from_ai: 0,
             failed: 0,
@@ -605,6 +609,11 @@ pub async fn run_quiz_answer(
                 result.submitted += 1;
                 count_answer_source(&mut result, source);
                 let is_correct = parse_is_correct(&resp);
+                // 服务端返回了正误（Some）才计入「已判定」，作为正确率分母；
+                // 未公布答案的测验 is_correct 为 None，不计入，避免正确率被低估。
+                if is_correct.is_some() {
+                    result.judged += 1;
+                }
                 if is_correct == Some(true) {
                     result.correct += 1;
                 }

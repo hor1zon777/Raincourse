@@ -122,6 +122,8 @@ export interface QuizAnswerResult {
   total: number;
   submitted: number;
   correct: number;
+  /** 服务端即时返回了正误判定的题数（答对+答错）；未公布答案的测验为 0。正确率分母取此值而非 submitted */
+  judged: number;
   from_local: number;
   from_ai: number;
   failed: number;

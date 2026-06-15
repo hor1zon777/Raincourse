@@ -210,20 +210,18 @@ export default function CourseDetail() {
     if (courses.length === 0) fetchCourses();
   }, [courses.length, fetchCourses]);
 
-  // 完成情况更新后，把「已完成」（完成度≥1）的任务/测验从勾选中剔除：
-  // 配合勾选框 disabled，实现「已完成不能再次被选择」。
+  // 完成情况更新后，把「已完成」（完成度≥1）的章节任务从刷课勾选中剔除：
+  // 配合勾选框 disabled，实现「已完成的刷课任务不能再次被选择」。
+  // 注意：测验勾选（selectedQuizIds）不在此剔除——已完成测验仍允许勾选以「导出答案」，
+  // 自动答题链路（handleBatchQuiz）会单独过滤掉已完成项，不会重复提交。
   useEffect(() => {
     if (!id) return;
     const done = (leafId: number) => (schedule[String(leafId)] ?? 0) >= 1;
     const prunedTasks = selectedTaskIds.filter((tid) => !done(tid));
-    const prunedQuizzes = selectedQuizIds.filter((qid) => !done(qid));
-    if (
-      prunedTasks.length !== selectedTaskIds.length ||
-      prunedQuizzes.length !== selectedQuizIds.length
-    ) {
-      patchCourseUI(id, { selectedTaskIds: prunedTasks, selectedQuizIds: prunedQuizzes });
+    if (prunedTasks.length !== selectedTaskIds.length) {
+      patchCourseUI(id, { selectedTaskIds: prunedTasks });
     }
-  }, [schedule, id, selectedTaskIds, selectedQuizIds, patchCourseUI]);
+  }, [schedule, id, selectedTaskIds, patchCourseUI]);
 
   // 监听自动答题进度事件（独立事件名，不与刷课 study-* 混用）
   useTauriListens([
@@ -267,8 +265,14 @@ export default function CourseDetail() {
 
   // 章节测验/练习（leaf_type=6）——可单独导出答案，并纳入批量导出
   const quizzes = chapterTasks.filter((t) => t.leaf_type === 6);
+  // 任务/测验是否已完成（完成度 >= 1）；刷课勾选中已完成项禁用，测验勾选不禁用
+  const isCompleted = (leafId: number) => (schedule[String(leafId)] ?? 0) >= 1;
   // 批量导出总数（作业 + 测验）
   const batchTotal = works.length + quizzes.length;
+  // 勾选的测验（含已完成；用于「导出选中答案」）
+  const selectedQuizzes = quizzes.filter((q) => selectedQuizIds.includes(q.id));
+  // 勾选中「未完成」的测验数（用于「批量自动答题/试跑」；已完成项不重复提交）
+  const answerableSelectedCount = selectedQuizzes.filter((q) => !isCompleted(q.id)).length;
 
   const handleExportAnswer = async (work: Work) => {
     if (!id) return;
@@ -470,9 +474,14 @@ export default function CourseDetail() {
 
   // 批量入口：试跑直接跑；真实提交走强警示确认
   const handleBatchQuiz = (dryRun: boolean) => {
+    // 已完成测验虽可勾选（用于导出答案），但自动答题/试跑只处理未完成项
     const list = quizzes.filter((q) => selectedQuizIds.includes(q.id) && !isCompleted(q.id));
     if (list.length === 0) {
-      message.warning('请先勾选要答题的测验');
+      message.warning(
+        selectedQuizIds.length > 0
+          ? '所选测验均已完成，无需答题（如需导出答案请用「导出选中答案」）'
+          : '请先勾选要答题的测验',
+      );
       return;
     }
     if (dryRun) {
@@ -511,6 +520,35 @@ export default function CourseDetail() {
     const leaf = currentQuizLeafRef.current;
     if (leaf == null) return;
     invoke('stop_quiz_auto_answer', { leafId: String(leaf) }).catch(() => {});
+  };
+
+  // 批量导出结束后的统一结果汇报：全成功用 success，否则 warning + 失败明细弹窗
+  const reportExportResult = (
+    ok: number,
+    failures: { title: string; reason: string }[],
+    stopped: boolean,
+  ) => {
+    if (failures.length === 0) {
+      message.success(`${stopped ? '已停止，' : ''}成功导出 ${ok} 个答案`);
+      return;
+    }
+    message.warning(
+      `${stopped ? '已停止。' : ''}完成：成功 ${ok} 个，失败 ${failures.length} 个`,
+    );
+    Modal.info({
+      title: '部分答案导出失败',
+      width: 520,
+      content: (
+        <div style={{ maxHeight: 320, overflow: 'auto' }}>
+          {failures.map((f, idx) => (
+            <div key={idx} style={{ marginBottom: 4 }}>
+              <Typography.Text strong>{f.title}</Typography.Text>
+              <Typography.Text type="secondary">：{f.reason}</Typography.Text>
+            </div>
+          ))}
+        </div>
+      ),
+    });
   };
 
   // 一键导出当前作业 + 章节测验的全部答案：串行执行 + 温和限速 + 单个失败隔离并汇总
@@ -575,28 +613,50 @@ export default function CourseDetail() {
     setBatchExporting(false);
     // 批量导出后刷新本地测验得分
     fetchQuizScores();
+    reportExportResult(ok, failures, stopped);
+  };
 
-    if (failures.length === 0) {
-      message.success(`${stopped ? '已停止，' : ''}成功导出 ${ok} 个答案`);
-    } else {
-      message.warning(
-        `${stopped ? '已停止。' : ''}完成：成功 ${ok} 个，失败 ${failures.length} 个`,
-      );
-      Modal.info({
-        title: '部分答案导出失败',
-        width: 520,
-        content: (
-          <div style={{ maxHeight: 320, overflow: 'auto' }}>
-            {failures.map((f, idx) => (
-              <div key={idx} style={{ marginBottom: 4 }}>
-                <Typography.Text strong>{f.title}</Typography.Text>
-                <Typography.Text type="secondary">：{f.reason}</Typography.Text>
-              </div>
-            ))}
-          </div>
-        ),
-      });
+  // 导出勾选的测验答案（含已完成测验）：串行 + 温和限速 + 失败隔离汇总
+  const handleExportSelectedQuizzes = async () => {
+    if (!id) return;
+    const list = selectedQuizzes;
+    if (list.length === 0) {
+      message.warning('请先勾选要导出答案的测验');
+      return;
     }
+    const total = list.length;
+    batchStopRef.current = false;
+    setBatchExporting(true);
+    setBatchProgress({ done: 0, total });
+
+    const failures: { title: string; reason: string }[] = [];
+    let ok = 0;
+    let done = 0;
+
+    for (const quiz of list) {
+      if (batchStopRef.current) break;
+      try {
+        await invoke<string>('export_quiz_answers', {
+          courseId: id,
+          courseName,
+          leafId: String(quiz.id),
+          quizName: quiz.name,
+        });
+        ok += 1;
+      } catch (e) {
+        failures.push({ title: quiz.name, reason: normalizeError(e).message });
+      }
+      done += 1;
+      setBatchProgress({ done, total });
+      if (done < total && !batchStopRef.current) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    }
+
+    const stopped = batchStopRef.current;
+    setBatchExporting(false);
+    fetchQuizScores();
+    reportExportResult(ok, failures, stopped);
   };
 
   const handleStudySelected = () => {
@@ -642,8 +702,13 @@ export default function CourseDetail() {
   // 去除浮点长尾（如 9.000001 → 9），最多两位小数
   const round2 = (n: number) => Math.round(n * 100) / 100;
 
-  // 任务/测验是否已完成（完成度 >= 1）；已完成的不可再次勾选
-  const isCompleted = (leafId: number) => (schedule[String(leafId)] ?? 0) >= 1;
+  // 正确率配色分档（用于答题完成后的醒目展示）：高(≥85)绿 / 中(≥60)橙 / 低红。
+  // 分母用 judged（服务端已判定题数）而非 submitted，未公布答案的测验 judged=0 时不显示百分比。
+  const accuracyTokenColor = (rate: number) =>
+    rate >= 85 ? token.colorSuccess : rate >= 60 ? token.colorWarning : token.colorError;
+  // 由汇总结果算正确率（judged>0 返回 0~100 整数，否则 null 表示无法统计）
+  const accuracyRate = (r: { correct: number; judged: number }) =>
+    r.judged > 0 ? Math.round((r.correct / r.judged) * 100) : null;
 
   // 完成情况：schedule[leafId] → 已完成 / 未完成 / 百分比
   const renderProgress = (leafId: number) => {
@@ -904,30 +969,37 @@ export default function CourseDetail() {
                         <div style={{ flex: 1 }} />
                         <Button
                           size="small"
+                          icon={<DownloadOutlined />}
+                          loading={batchExporting}
+                          disabled={selectedQuizIds.length === 0 || exporting !== null || exportingQuiz !== null || answering}
+                          onClick={handleExportSelectedQuizzes}
+                        >
+                          导出选中答案 ({selectedQuizIds.length})
+                        </Button>
+                        <Button
+                          size="small"
                           icon={<ExperimentOutlined />}
-                          disabled={selectedQuizIds.length === 0 || batchExporting || answering}
+                          disabled={answerableSelectedCount === 0 || batchExporting || answering}
                           onClick={() => handleBatchQuiz(true)}
                         >
-                          批量试跑 ({selectedQuizIds.length})
+                          批量试跑 ({answerableSelectedCount})
                         </Button>
                         <Button
                           size="small"
                           danger
                           icon={<RobotOutlined />}
-                          disabled={selectedQuizIds.length === 0 || batchExporting || answering}
+                          disabled={answerableSelectedCount === 0 || batchExporting || answering}
                           onClick={() => handleBatchQuiz(false)}
                         >
-                          批量自动答题 ({selectedQuizIds.length})
+                          批量自动答题 ({answerableSelectedCount})
                         </Button>
                       </div>
                       <Table
                         rowSelection={{
                           selectedRowKeys: selectedQuizIds,
                           onChange: (keys) => setSelectedQuizIds(keys as number[]),
-                          // 已完成的测验禁止勾选
-                          getCheckboxProps: (record: ChapterTask) => ({
-                            disabled: isCompleted(record.id),
-                          }),
+                          // 测验勾选不禁用已完成项：已完成测验仍可勾选以「导出答案」；
+                          // 自动答题/试跑会在 handleBatchQuiz 内过滤掉已完成项，不重复提交。
                         }}
                         columns={quizColumns}
                         dataSource={quizzes}
@@ -1154,6 +1226,45 @@ export default function CourseDetail() {
             </List.Item>
           )}
         />
+        {quizResult && !batchQuizActive && !quizDryRun && quizResult.submitted > 0 && (() => {
+          const rate = accuracyRate(quizResult);
+          return (
+            <div
+              style={{
+                marginTop: 12,
+                padding: '16px 12px',
+                textAlign: 'center',
+                background: token.colorFillQuaternary,
+                borderRadius: token.borderRadiusLG,
+              }}
+            >
+              <div style={{ fontSize: 13, color: token.colorTextSecondary, marginBottom: 4 }}>
+                本次作答正确率
+              </div>
+              {rate !== null ? (
+                <>
+                  <div
+                    style={{
+                      fontSize: 42,
+                      fontWeight: 700,
+                      lineHeight: 1.1,
+                      color: accuracyTokenColor(rate),
+                    }}
+                  >
+                    {rate}%
+                  </div>
+                  <div style={{ fontSize: 12, color: token.colorTextTertiary, marginTop: 6 }}>
+                    答对 {quizResult.correct} / 已判定 {quizResult.judged} 题（共提交 {quizResult.submitted}）
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 14, color: token.colorTextTertiary, marginTop: 4 }}>
+                  服务端未即时返回正误，无法统计正确率（已提交 {quizResult.submitted} 题）
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {quizResult && !batchQuizActive && (
           <Alert
             style={{ marginTop: 12 }}
