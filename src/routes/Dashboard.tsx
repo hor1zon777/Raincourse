@@ -1,11 +1,10 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Table, Typography, Button, Space, Card, Spin } from 'antd';
+import { Table, Button, Space, Card, Spin } from 'antd';
 import { EyeOutlined } from '@ant-design/icons';
 import { useCourseStore } from '../stores/courseStore';
+import PageHeader from '../components/PageHeader';
 import type { Course } from '../types';
-
-const { Title } = Typography;
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -64,12 +63,14 @@ export default function Dashboard() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Title level={4} style={{ margin: 0 }}>我的课程</Title>
-        <Button onClick={fetchCourses} loading={loading}>
-          刷新
-        </Button>
-      </div>
+      <PageHeader
+        title="我的课程"
+        extra={
+          <Button onClick={fetchCourses} loading={loading}>
+            刷新
+          </Button>
+        }
+      />
 
       <Card>
         <Spin spinning={loading}>
@@ -79,6 +80,7 @@ export default function Dashboard() {
             rowKey="classroom_id"
             pagination={false}
             size="middle"
+            scroll={{ x: 'max-content' }}
           />
         </Spin>
       </Card>

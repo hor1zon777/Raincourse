@@ -3,8 +3,7 @@ import { Table, Card, Typography, Button, Spin, Tag, message, Empty } from 'antd
 import { ReloadOutlined, FileExcelOutlined, ExportOutlined } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { normalizeError } from '../utils/errors';
-
-const { Title } = Typography;
+import PageHeader from '../components/PageHeader';
 
 interface ExamFileInfo {
   exam_id: string;
@@ -114,14 +113,15 @@ export default function ExamExport() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <Title level={4} style={{ margin: 0 }}>
-          <ExportOutlined /> 数据导出
-        </Title>
-        <Button icon={<ReloadOutlined />} onClick={fetchFiles} loading={loading}>
-          刷新
-        </Button>
-      </div>
+      <PageHeader
+        icon={<ExportOutlined />}
+        title="数据导出"
+        extra={
+          <Button icon={<ReloadOutlined />} onClick={fetchFiles} loading={loading}>
+            刷新
+          </Button>
+        }
+      />
 
       <Card>
         <Spin spinning={loading}>
@@ -138,6 +138,7 @@ export default function ExamExport() {
                 rowKey="exam_id"
                 pagination={false}
                 size="middle"
+                scroll={{ x: 'max-content' }}
               />
             </>
           )}

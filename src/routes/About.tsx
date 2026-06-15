@@ -9,8 +9,9 @@ import {
 } from '@ant-design/icons';
 import { open as openExternal } from '@tauri-apps/plugin-shell';
 import type { MouseEvent } from 'react';
+import PageHeader from '../components/PageHeader';
 
-const { Title, Paragraph, Text, Link } = Typography;
+const { Paragraph, Text, Link } = Typography;
 
 const REPO_URL = 'https://github.com/hor1zon777/Raincourse';
 const ORIGINAL_REPO_URL = 'https://github.com/aglorice/Raincourse';
@@ -43,9 +44,7 @@ function ExtLink({ url, children }: { url: string; children: React.ReactNode }) 
 export default function About() {
   return (
     <div>
-      <Title level={4} style={{ marginBottom: 16 }}>
-        <InfoCircleOutlined /> 关于
-      </Title>
+      <PageHeader icon={<InfoCircleOutlined />} title="关于" />
 
       <Space direction="vertical" style={{ width: '100%' }} size="large">
         <Card title={<><InfoCircleOutlined /> 应用信息</>}>

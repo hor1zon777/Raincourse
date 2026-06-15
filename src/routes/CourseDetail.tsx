@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Table, Tabs, Typography, Button, Space, Card, Spin, Tag, message, Modal, Select, Input, Alert, Drawer, Progress, List } from 'antd';
+import { Table, Tabs, Typography, Button, Space, Card, Spin, Tag, message, Modal, Select, Input, Alert, Drawer, Progress, List, theme } from 'antd';
 import {
   DownloadOutlined,
   PlayCircleOutlined,
@@ -20,8 +20,7 @@ import { useCourseStore, DEFAULT_COURSE_UI } from '../stores/courseStore';
 import { normalizeError } from '../utils/errors';
 import { useTauriListens } from '../utils/useTauriListens';
 import type { Work, ExportResult, QuizAnswerEvent, QuizAnswerResult, LearnSchedule, QuizScore, ScoreDetailItem, Ppt } from '../types';
-
-const { Title } = Typography;
+import PageHeader from '../components/PageHeader';
 
 interface ChapterTask {
   index: number;
@@ -41,6 +40,7 @@ const LEAF_TYPE_OPTIONS = [
 export default function CourseDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { token } = theme.useToken();
   // 细粒度 selector
   const works = useCourseStore((s) => s.works);
   const ppts = useCourseStore((s) => s.ppts);
@@ -634,7 +634,7 @@ export default function CourseDetail() {
   // 完成情况：schedule[leafId] → 已完成 / 未完成 / 百分比
   const renderProgress = (leafId: number) => {
     const v = schedule[String(leafId)];
-    if (v === undefined || v === null) return <span style={{ color: '#bbb' }}>-</span>;
+    if (v === undefined || v === null) return     <span style={{ color: token.colorTextQuaternary }}>-</span>;
     if (v >= 1) return <Tag color="green">已完成</Tag>;
     if (v <= 0) return <Tag>未完成</Tag>;
     return <Tag color="blue">{Math.round(v * 100)}%</Tag>;
@@ -652,7 +652,7 @@ export default function CourseDetail() {
       );
     }
     const s = quizScores[String(leafId)];
-    if (!s || s.count === 0) return <span style={{ color: '#bbb' }}>-</span>;
+    if (!s || s.count === 0) return     <span style={{ color: token.colorTextQuaternary }}>-</span>;
     return (
       <span>
         {round2(s.score)}/{round2(s.total)}
@@ -798,7 +798,7 @@ export default function CourseDetail() {
       key: 'score',
       width: 90,
       render: (_: unknown, record: ChapterTask) =>
-        record.leaf_type === 6 ? renderScore(record.id) : <span style={{ color: '#bbb' }}>-</span>,
+        record.leaf_type === 6 ? renderScore(record.id) :     <span style={{ color: token.colorTextQuaternary }}>-</span>,
     },
     { title: '任务 ID', dataIndex: 'id', key: 'id', width: 110 },
   ];
@@ -823,20 +823,23 @@ export default function CourseDetail() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>
-          返回
-        </Button>
-        <Title level={4} style={{ margin: 0 }}>课程详情</Title>
-        <div style={{ flex: 1 }} />
-        <Button
-          type="primary"
-          icon={<PlayCircleOutlined />}
-          onClick={handleStudyAll}
-        >
-          全部刷课
-        </Button>
-      </div>
+      <PageHeader
+        before={
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>
+            返回
+          </Button>
+        }
+        title="课程详情"
+        extra={
+          <Button
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            onClick={handleStudyAll}
+          >
+            全部刷课
+          </Button>
+        }
+      />
 
       <Card>
         <Spin spinning={worksLoading || pptsLoading}>
@@ -877,7 +880,7 @@ export default function CourseDetail() {
                         </Button>
                       )}
                     </div>
-                    <Table columns={workColumns} dataSource={works} rowKey="courseware_id" pagination={false} size="middle" />
+                    <Table columns={workColumns} dataSource={works} rowKey="courseware_id" pagination={false} size="middle" scroll={{ x: 'max-content' }} />
                     <div style={{ marginTop: 24 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
                         <Typography.Text strong>章节测验/练习 ({quizzes.length})</Typography.Text>
@@ -917,6 +920,7 @@ export default function CourseDetail() {
                         rowKey="id"
                         pagination={quizzes.length > 50 ? { pageSize: 50 } : false}
                         size="middle"
+                        scroll={{ x: 'max-content' }}
                         locale={{ emptyText: '该课程暂无章节测验/练习' }}
                       />
                     </div>
@@ -927,7 +931,7 @@ export default function CourseDetail() {
                 key: 'ppts',
                 label: `课件列表 (${ppts.length})`,
                 children: (
-                  <Table columns={pptColumns} dataSource={ppts} rowKey="courseware_id" pagination={false} size="middle" />
+                  <Table columns={pptColumns} dataSource={ppts} rowKey="courseware_id" pagination={false} size="middle" scroll={{ x: 'max-content' }} />
                 ),
               },
               {
@@ -962,7 +966,7 @@ export default function CourseDetail() {
 
                     {/* 筛选与操作栏 */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-                      <FilterOutlined style={{ color: '#999' }} />
+                      <FilterOutlined style={{ color: token.colorTextTertiary }} />
                       <Select
                         mode="multiple"
                         allowClear
@@ -1031,6 +1035,7 @@ export default function CourseDetail() {
                       rowKey="id"
                       pagination={filteredTasks.length > 50 ? { pageSize: 50 } : false}
                       size="middle"
+                      scroll={{ x: 'max-content' }}
                     />
                   </Spin>
                 ),
@@ -1112,17 +1117,17 @@ export default function CourseDetail() {
           renderItem={(e: QuizAnswerEvent) => (
             <List.Item>
               <Space size="small" wrap>
-                <span style={{ color: '#999' }}>#{e.index}</span>
+                <span style={{ color: token.colorTextTertiary }}>#{e.index}</span>
                 {e.source && (
                   <Tag color={e.source === 'local' ? 'green' : 'blue'}>
                     {e.source === 'local' ? '题库' : 'AI'}
                   </Tag>
                 )}
                 {e.status === 'done' && e.is_correct === true && (
-                  <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                  <CheckCircleOutlined style={{ color: token.colorSuccess }} />
                 )}
                 {e.status === 'done' && e.is_correct === false && (
-                  <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                  <CloseCircleOutlined style={{ color: token.colorError }} />
                 )}
                 {e.status === 'failed' && <Tag color="red">失败</Tag>}
                 {e.status === 'skipped' && <Tag>跳过</Tag>}

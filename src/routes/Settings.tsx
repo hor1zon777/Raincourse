@@ -3,9 +3,8 @@ import { Card, Typography, Space, Form, Input, Switch, Button, message } from 'a
 import { SettingOutlined, RobotOutlined } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { normalizeError } from '../utils/errors';
+import PageHeader from '../components/PageHeader';
 import type { AiConfig, AiConfigView } from '../types';
-
-const { Title } = Typography;
 
 export default function Settings() {
   const [form] = Form.useForm();
@@ -63,9 +62,7 @@ export default function Settings() {
 
   return (
     <div>
-      <Title level={4} style={{ marginBottom: 16 }}>
-        <SettingOutlined /> 设置
-      </Title>
+      <PageHeader icon={<SettingOutlined />} title="设置" />
 
       <Space direction="vertical" style={{ width: '100%' }} size="large">
         <Card

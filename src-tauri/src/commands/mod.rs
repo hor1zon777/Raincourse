@@ -672,6 +672,35 @@ pub async fn get_answer_files(app: AppHandle) -> Result<Vec<Value>, AppError> {
     Ok(json_store::list_answer_files(&app_data_dir))
 }
 
+/// 删除单个答案文件（按 list_answer_files 返回的真实 `file_name`）。
+#[tauri::command]
+pub async fn delete_answer_file(app: AppHandle, file_name: String) -> Result<(), AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    json_store::delete_answer_file(&app_data_dir, &file_name)
+}
+
+/// 批量删除答案文件：逐个删除、单个失败隔离，返回成功数与失败明细
+/// `{ deleted: usize, failed: [{file_name, reason}] }`。
+#[tauri::command]
+pub async fn delete_answer_files(
+    app: AppHandle,
+    file_names: Vec<String>,
+) -> Result<Value, AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    let mut deleted = 0usize;
+    let mut failed: Vec<Value> = Vec::new();
+    for name in &file_names {
+        match json_store::delete_answer_file(&app_data_dir, name) {
+            Ok(()) => deleted += 1,
+            Err(e) => failed.push(serde_json::json!({
+                "file_name": name,
+                "reason": e.to_string(),
+            })),
+        }
+    }
+    Ok(serde_json::json!({ "deleted": deleted, "failed": failed }))
+}
+
 /// 获取课程学习进度：每个 leaf 的完成度 + 整体完成度。
 ///
 /// 返回 `{ leaf_schedules: {leaf_id: 0|1|浮点}, total_schedule: 0~1 }`。

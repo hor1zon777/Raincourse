@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, List, Button, Divider, Typography, Spin, message, Modal, Space, Empty, Popconfirm } from 'antd';
+import { Card, List, Button, Typography, Spin, message, Modal, Space, Empty, Popconfirm, theme } from 'antd';
 import { QrcodeOutlined, UserOutlined, ReloadOutlined, DeleteOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import { QRCodeSVG } from 'qrcode.react';
 import type { Event } from '@tauri-apps/api/event';
@@ -13,6 +13,7 @@ const { Title, Text } = Typography;
 
 export default function Login() {
   const navigate = useNavigate();
+  const { token } = theme.useToken();
   // selector 细粒化：仅订阅用到的字段，避免无关字段变化导致重渲染
   const initClient = useAuthStore((s) => s.initClient);
   const fetchSavedUsers = useAuthStore((s) => s.fetchSavedUsers);
@@ -116,15 +117,25 @@ export default function Login() {
   );
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: '#f5f5f5' }}>
-      <Card style={{ width: 800, boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}>
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100vh',
+        padding: 24,
+        boxSizing: 'border-box',
+        background: token.colorBgLayout,
+      }}
+    >
+      <Card style={{ width: '100%', maxWidth: 800, boxShadow: token.boxShadowTertiary }}>
         <Title level={3} style={{ textAlign: 'center', marginBottom: 32 }}>
           雨课堂助手 v2
         </Title>
 
-        <div style={{ display: 'flex', gap: 32 }}>
+        <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
           {/* 左侧：已保存用户 */}
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: '1 1 280px', minWidth: 0 }}>
             <Title level={5}>
               <UserOutlined /> 已保存的用户
             </Title>
@@ -176,10 +187,8 @@ export default function Login() {
             </Button>
           </div>
 
-          <Divider type="vertical" style={{ height: 'auto' }} />
-
           {/* 右侧：扫码登录 */}
-          <div style={{ flex: 1, textAlign: 'center' }}>
+          <div style={{ flex: '1 1 280px', minWidth: 0, textAlign: 'center' }}>
             <Title level={5}>
               <QrcodeOutlined /> 微信扫码登录
             </Title>
@@ -192,9 +201,9 @@ export default function Login() {
                 display: 'flex',
                 justifyContent: 'center',
                 alignItems: 'center',
-                border: '1px solid #d9d9d9',
-                borderRadius: 8,
-                background: '#fafafa',
+                border: `1px solid ${token.colorBorder}`,
+                borderRadius: token.borderRadiusLG,
+                background: token.colorFillQuaternary,
               }}
             >
               {qrLoading && !qrUrl ? (

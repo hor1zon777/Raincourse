@@ -60,7 +60,8 @@ pub fn load_json(dir: &Path, filename: &str) -> Result<Value, AppError> {
     Ok(data)
 }
 
-/// 列出答案文件。
+/// 列出答案文件。每条返回文件内的 `info`，并注入真实磁盘文件名 `file_name`，
+/// 供前端精确定位删除（answer 目录下文件名格式不一：`{id}.json` / `quiz_*.json` / `ppt_*.json`）。
 pub fn list_answer_files(app_data_dir: &Path) -> Vec<Value> {
     let dir = match get_answer_dir(app_data_dir) {
         Ok(d) => d,
@@ -75,7 +76,15 @@ pub fn list_answer_files(app_data_dir: &Path) -> Vec<Value> {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         if let Ok(data) = serde_json::from_str::<Value>(&content) {
                             if let Some(info) = data.get("info") {
-                                files.push(info.clone());
+                                let mut info = info.clone();
+                                // 用真实磁盘文件名覆盖注入，作为删除时的可靠定位键
+                                if let Some(obj) = info.as_object_mut() {
+                                    obj.insert(
+                                        "file_name".to_string(),
+                                        Value::String(name.to_string()),
+                                    );
+                                }
+                                files.push(info);
                             }
                         }
                     }
@@ -85,4 +94,23 @@ pub fn list_answer_files(app_data_dir: &Path) -> Vec<Value> {
     }
 
     files
+}
+
+/// 删除 answer 目录下指定答案文件。
+///
+/// 文件名经 [`sanitize::sanitize_filename`] 清洗并二次校验落在 answer 目录内，
+/// 防止路径穿越；文件不存在视为成功（幂等，便于批量删除中并发刷新的容错）。
+pub fn delete_answer_file(app_data_dir: &Path, file_name: &str) -> Result<(), AppError> {
+    let dir = get_answer_dir(app_data_dir)?;
+    let stem = file_name.strip_suffix(".json").unwrap_or(file_name);
+    let clean = sanitize::sanitize_filename(stem)?;
+    let file_path = dir.join(format!("{}.json", clean));
+    if !file_path.starts_with(&dir) {
+        return Err(AppError::InvalidInput(format!("非法文件名: {}", file_name)));
+    }
+    match std::fs::remove_file(&file_path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }

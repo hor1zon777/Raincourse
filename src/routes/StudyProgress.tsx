@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Card, Typography, Button, Tag, Progress, List, message, Popconfirm, Alert, Switch, Modal, Select, InputNumber } from 'antd';
+import { Card, Typography, Button, Tag, Progress, List, message, Popconfirm, Alert, Switch, Modal, Select, InputNumber, Space, theme } from 'antd';
 import {
   ArrowLeftOutlined,
   PlayCircleOutlined,
@@ -12,8 +12,9 @@ import type { Event } from '@tauri-apps/api/event';
 import type { TaskUpdateEvent } from '../types';
 import { useTauriListens } from '../utils/useTauriListens';
 import { normalizeError } from '../utils/errors';
+import PageHeader from '../components/PageHeader';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 interface Task {
   index: number;
@@ -34,6 +35,7 @@ export default function StudyProgress() {
   const location = useLocation();
   const locationState = (location.state || {}) as LocationState;
   const customTaskIds = locationState.taskIds;
+  const { token } = theme.useToken();
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [running, setRunning] = useState(false);
@@ -253,72 +255,81 @@ export default function StudyProgress() {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} disabled={running}>
-          返回
-        </Button>
-        <Title level={4} style={{ margin: 0 }}>自动刷课</Title>
-        <div style={{ flex: 1 }} />
-        <span style={{ color: '#666', fontSize: 13 }}>视频倍率</span>
-        <Select
-          value={playbackRate}
-          onChange={changePlaybackRate}
-          disabled={running || stopping}
-          style={{ width: 88 }}
-          options={[
-            { value: 1, label: '1x' },
-            { value: 1.25, label: '1.25x' },
-            { value: 1.5, label: '1.5x' },
-            { value: 2, label: '2x' },
-            { value: 3, label: '3x' },
-          ]}
-        />
-        <span style={{ color: '#666', fontSize: 13 }}>并行</span>
-        <InputNumber
-          value={concurrency}
-          onChange={changeConcurrency}
-          disabled={running || stopping}
-          min={1}
-          max={10}
-          step={1}
-          style={{ width: 72 }}
-        />
-        <Switch
-          checked={autoAnswerQuiz}
-          onChange={toggleAutoAnswer}
-          disabled={running || stopping}
-          checkedChildren="测验自动答题"
-          unCheckedChildren="测验跳过"
-        />
-        {running ? (
-          <Popconfirm
-            title="确定停止刷课？"
-            description="当前正在执行的任务会在完成当前步骤后停止"
-            onConfirm={stopStudy}
-            okText="确定停止"
-            cancelText="继续"
-            okButtonProps={{ danger: true }}
-          >
-            <Button
-              danger
-              icon={<StopOutlined />}
-              loading={stopping}
-              disabled={stopping}
-            >
-              {stopping ? '正在停止...' : '停止刷课'}
-            </Button>
-          </Popconfirm>
-        ) : (
-          <Button
-            type="primary"
-            icon={<PlayCircleOutlined />}
-            onClick={startStudy}
-            disabled={running || stopping}
-          >
-            开始刷课
+      <PageHeader
+        before={
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} disabled={running}>
+            返回
           </Button>
-        )}
-      </div>
+        }
+        title="自动刷课"
+        extra={
+          <>
+            <Space size={6}>
+              <Text type="secondary" style={{ fontSize: 13 }}>视频倍率</Text>
+              <Select
+                value={playbackRate}
+                onChange={changePlaybackRate}
+                disabled={running || stopping}
+                style={{ width: 88 }}
+                options={[
+                  { value: 1, label: '1x' },
+                  { value: 1.25, label: '1.25x' },
+                  { value: 1.5, label: '1.5x' },
+                  { value: 2, label: '2x' },
+                  { value: 3, label: '3x' },
+                ]}
+              />
+            </Space>
+            <Space size={6}>
+              <Text type="secondary" style={{ fontSize: 13 }}>并行</Text>
+              <InputNumber
+                value={concurrency}
+                onChange={changeConcurrency}
+                disabled={running || stopping}
+                min={1}
+                max={10}
+                step={1}
+                style={{ width: 72 }}
+              />
+            </Space>
+            <Switch
+              checked={autoAnswerQuiz}
+              onChange={toggleAutoAnswer}
+              disabled={running || stopping}
+              checkedChildren="测验自动答题"
+              unCheckedChildren="测验跳过"
+            />
+            {running ? (
+              <Popconfirm
+                title="确定停止刷课？"
+                description="当前正在执行的任务会在完成当前步骤后停止"
+                onConfirm={stopStudy}
+                okText="确定停止"
+                cancelText="继续"
+                okButtonProps={{ danger: true }}
+              >
+                <Button
+                  danger
+                  icon={<StopOutlined />}
+                  loading={stopping}
+                  disabled={stopping}
+                >
+                  {stopping ? '正在停止...' : '停止刷课'}
+                </Button>
+              </Popconfirm>
+            ) : (
+              <Button
+                type="primary"
+                icon={<PlayCircleOutlined />}
+                onClick={startStudy}
+                disabled={running || stopping}
+              >
+                开始刷课
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {autoAnswerQuiz && (
         <Alert
@@ -363,7 +374,7 @@ export default function StudyProgress() {
       {(tasks.length > 0 || totalTasks > 0) && (
         <Card style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 8 }}>
-            <CheckCircleOutlined style={{ fontSize: 24, color: overallPercent >= 100 ? '#52c41a' : '#1677ff' }} />
+            <CheckCircleOutlined style={{ fontSize: 24, color: overallPercent >= 100 ? token.colorSuccess : token.colorPrimary }} />
             <div style={{ flex: 1 }}>
               <Progress
                 percent={overallPercent}
@@ -372,9 +383,9 @@ export default function StudyProgress() {
               />
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 13, color: '#666' }}>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 13, color: token.colorTextSecondary }}>
             <span>总进度: <Text strong>{doneCount}</Text> / {effectiveTotal}</span>
-            {failedCount > 0 && <span style={{ color: '#ff4d4f' }}>失败: {failedCount}</span>}
+            {failedCount > 0 && <span style={{ color: token.colorError }}>失败: {failedCount}</span>}
             {elapsed > 0 && <span>已用时: {formatTime(elapsed)}</span>}
             {running && doneCount > 0 && effectiveTotal > doneCount && (
               <span>
@@ -382,12 +393,12 @@ export default function StudyProgress() {
               </span>
             )}
             {runningTasks.length > 1 ? (
-              <span style={{ color: '#1677ff' }}>
+              <span style={{ color: token.colorPrimary }}>
                 进行中: {runningTasks.length} 个
               </span>
             ) : (
               currentTask && (
-                <span style={{ color: '#1677ff' }}>
+                <span style={{ color: token.colorPrimary }}>
                   当前: {currentTask.name}
                 </span>
               )
@@ -405,7 +416,7 @@ export default function StudyProgress() {
               actions={[statusTag(task.status)]}
               style={{
                 opacity: task.status === 'done' || task.status === 'skipped' ? 0.6 : 1,
-                background: task.index === currentIndex && task.status === 'running' ? '#e6f7ff' : undefined,
+                background: task.index === currentIndex && task.status === 'running' ? token.colorPrimaryBg : undefined,
                 padding: '8px 16px',
                 borderRadius: 4,
               }}
