@@ -407,6 +407,7 @@ pub async fn export_work_answers(
     app: AppHandle,
     state: State<'_, AppState>,
     course_id: String,
+    course_name: String,
     work_id: String,
     work_name: String,
     work_type: Option<i32>,
@@ -458,7 +459,8 @@ pub async fn export_work_answers(
         let info = serde_json::json!({
             "exam_id": work_id,
             "exam_name": work_name,
-            "exam_type": "考试试题"
+            "exam_type": "考试试题",
+            "course_name": course_name
         });
         let path = json_store::save_json(&dir, &work_id, &answer_data, &info)?;
         Ok(path)
@@ -478,6 +480,7 @@ pub async fn export_quiz_answers(
     app: AppHandle,
     state: State<'_, AppState>,
     course_id: String,
+    course_name: String,
     leaf_id: String,
     quiz_name: String,
 ) -> Result<String, AppError> {
@@ -520,7 +523,8 @@ pub async fn export_quiz_answers(
     let info = serde_json::json!({
         "exam_id": leaf_id,
         "exam_name": quiz_name,
-        "exam_type": "章节测验"
+        "exam_type": "章节测验",
+        "course_name": course_name
     });
     let filename = format!("quiz_{}", leaf_id);
     let path = json_store::save_json(&dir, &filename, &resp, &info)?;
@@ -538,6 +542,7 @@ pub async fn export_ppt_answers(
     app: AppHandle,
     state: State<'_, AppState>,
     course_id: String,
+    course_name: String,
     courseware_id: String,
     ppt_title: String,
 ) -> Result<String, AppError> {
@@ -565,7 +570,8 @@ pub async fn export_ppt_answers(
     let info = serde_json::json!({
         "exam_id": courseware_id,
         "exam_name": ppt_title,
-        "exam_type": "课件试题"
+        "exam_type": "课件试题",
+        "course_name": course_name
     });
     let filename = format!("ppt_{}", courseware_id);
     let path = json_store::save_json(&dir, &filename, &resp, &info)?;

@@ -18,12 +18,13 @@
 
 ## 功能特性
 
-- 🔐 **扫码登录**：通过雨课堂微信小程序扫码授权，多账号会话本地加密存储
-- 📚 **课程管理**：查看课程列表 / 章节任务 / 任务筛选
+- 🔐 **扫码登录**：通过雨课堂微信小程序扫码授权，多账号会话本地加密存储、快速切换 / 删除
+- 📚 **课程管理**：课程列表、章节任务、按类型 / 名称筛选，完成情况与得分一览
+- ▶️ **自动刷课**：视频 / PPT / 公告类任务自动播放进度上报；可勾选任务、**自定义视频倍速**、**多线程并行观看**；已完成任务自动跳过
+- 🤖 **AI 自动答题**：章节测验 / 练习自动作答，**本地题库优先、未命中调用 OpenAI 兼容大模型兜底**；支持「试跑」预览、单个 / 批量答题；加密字体运行时解码，无法可靠识别的题自动跳过、绝不提交脏答案
 - 📝 **答案导出**：批量获取题目与参考答案，导出 Excel
-- ▶️ **自动刷课**：支持视频 / PPT / 公告类任务的自动播放进度上报，可选择性勾选任务
-- 📊 **进度面板**：总进度统计、停止刷课按钮
-- 👤 **多账号切换**：本地加密保存登录会话，支持快速切换 / 删除已保存账号
+- 🗂️ **答案文件管理**：按归属课程查看，支持单个 / 批量删除本地答案文件
+- 📊 **进度面板**：总进度、用时 / 预计剩余、逐项状态、停止按钮
 - 🪟 **原生体验**：Tauri v2 打包，体积小、启动快，仅 Windows NSIS 安装包
 
 ## 技术栈
@@ -32,6 +33,7 @@
 | --- | --- |
 | **前端** | React 19 · TypeScript · Vite · Ant Design 6 · React Router 7 · Zustand |
 | **后端** | Rust · Tauri v2 · Tokio · reqwest · cookie_store |
+| **AI** | OpenAI 兼容 Chat Completions（自动答题兜底）· 加密字体运行时解码 |
 | **存储** | AES 加密的本地 session 文件 · JSON store |
 | **打包** | Tauri Bundler · NSIS (Windows) |
 
@@ -79,22 +81,24 @@ pnpm preview    # 预览前端构建产物
 ```
 raincourse-v2/
 ├── src/                          # React 前端
-│   ├── routes/                   # 页面（Login/Dashboard/CourseDetail/...）
-│   ├── components/Layout.tsx     # 主布局（侧边栏 + 头部）
+│   ├── routes/                   # 页面（Login/Dashboard/CourseDetail/StudyProgress/AnswerFiles/ExamExport/Settings/About）
+│   ├── components/               # 通用组件（Layout 主布局、PageHeader 统一页头）
 │   ├── stores/                   # Zustand 状态（authStore/courseStore）
 │   ├── utils/                    # 错误归一化 / 响应守卫 / Tauri 事件
 │   └── types/                    # TS 类型定义
 ├── src-tauri/                    # Rust 后端
 │   ├── src/
+│   │   ├── ai/                   # AI 自动答题（client 大模型调用 / encode 题目解析编码 / font_decode 加密字体解码 / quiz_runner 答题核心 / config 配置加密）
 │   │   ├── api/                  # HTTP 客户端 + 自定义 DomainAwareJar
-│   │   ├── commands/             # Tauri Command（登录/课程/导出/...）
+│   │   ├── commands/             # Tauri Command（登录/课程/导出/答案文件/自动答题/...）
 │   │   ├── session/manager.rs    # 加密会话存储（多域 cookies, v2 版本）
-│   │   ├── storage/json_store.rs # JSON 持久化
+│   │   ├── storage/json_store.rs # JSON 持久化（答案 / 考试文件读写删）
 │   │   ├── ws/login.rs           # 扫码登录 WebSocket
-│   │   ├── util/crypto.rs        # AES 加密 (data dir 派生 key)
-│   │   ├── study.rs              # 自动刷课
+│   │   ├── util/                 # 加密 / 文件名清洗 / 通用工具
+│   │   ├── study.rs              # 自动刷课（倍速 / 并行 / 测验复用 AI 兜底）
 │   │   ├── excel.rs              # Excel 导出
 │   │   └── error.rs              # 统一 AppError
+│   ├── assets/                   # 内嵌资源（思源黑体参考字体，用于加密字体解码）
 │   ├── capabilities/default.json # Tauri 权限清单
 │   ├── icons/                    # 多平台应用图标
 │   └── tauri.conf.json
@@ -104,9 +108,10 @@ raincourse-v2/
 
 ## 数据与隐私
 
-- **会话存储**：登录态保存在系统应用数据目录（Windows: `%APPDATA%/com.raincourse.helper/`），使用 AES 加密，密钥派生自 data dir 路径，跨账号隔离
+- **会话存储**：登录态保存在系统应用数据目录，使用 AES 加密，密钥派生自 data dir 路径，跨账号隔离
 - **多域 Cookie**：自动按域分组持久化 `yuketang.cn` / `xuetangx.com` 等多域 cookies，避免重启后部分接口失效
-- **无遥测**：本应用不收集、不上传任何使用数据，所有网络请求均直接发往雨课堂官方服务器
+- **AI 配置**：AI API Key 仅在本机加密存储、绝不上传；调用时仅向**用户自行配置的 OpenAI 兼容接口**发送题干与选项
+- **无遥测**：本应用不收集、不上传任何使用数据，所有网络请求均直接发往雨课堂官方服务器或用户自配的 AI 接口
 
 ## 致谢
 

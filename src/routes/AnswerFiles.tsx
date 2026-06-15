@@ -99,6 +99,13 @@ export default function AnswerFiles() {
       width: 120,
     },
     {
+      title: '课程',
+      dataIndex: 'course_name',
+      key: 'course_name',
+      width: 180,
+      render: (v: string | undefined) => v || '-',
+    },
+    {
       title: '名称',
       dataIndex: 'exam_name',
       key: 'exam_name',

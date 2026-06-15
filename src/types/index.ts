@@ -38,6 +38,8 @@ export interface AnswerFile {
   exam_id: string;
   exam_name: string;
   exam_type: string;
+  /** 归属课程名（导出时写入；旧文件可能没有） */
+  course_name?: string;
   /** 真实磁盘文件名（后端注入，用于删除定位） */
   file_name: string;
 }

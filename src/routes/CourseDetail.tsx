@@ -49,6 +49,10 @@ export default function CourseDetail() {
   const fetchWorks = useCourseStore((s) => s.fetchWorks);
   const fetchPpts = useCourseStore((s) => s.fetchPpts);
   const setCourseContext = useCourseStore((s) => s.setCourseContext);
+  const courses = useCourseStore((s) => s.courses);
+  const fetchCourses = useCourseStore((s) => s.fetchCourses);
+  // 当前课程名（导出答案时标注归属课程）；路由 id 即 classroom_id
+  const courseName = courses.find((c) => String(c.classroom_id) === id)?.course_name ?? '';
 
   const [exporting, setExporting] = useState<number | null>(null);
   const [batchExporting, setBatchExporting] = useState(false);
@@ -201,6 +205,11 @@ export default function CourseDetail() {
     };
   }, [id, fetchWorks, fetchPpts, setCourseContext, fetchChapterTasks, fetchSchedule, fetchQuizScores, fetchScoreDetail]);
 
+  // 课程名依赖课程列表；直接进入详情页（未经课程列表）时按需加载一次
+  useEffect(() => {
+    if (courses.length === 0) fetchCourses();
+  }, [courses.length, fetchCourses]);
+
   // 完成情况更新后，把「已完成」（完成度≥1）的任务/测验从勾选中剔除：
   // 配合勾选框 disabled，实现「已完成不能再次被选择」。
   useEffect(() => {
@@ -267,6 +276,7 @@ export default function CourseDetail() {
     try {
       const path = await invoke<string>('export_work_answers', {
         courseId: id,
+        courseName,
         workId: work.exam_id,
         workName: work.title,
         workType: work.work_type,
@@ -303,6 +313,7 @@ export default function CourseDetail() {
     try {
       const path = await invoke<string>('export_quiz_answers', {
         courseId: id,
+        courseName,
         leafId: String(quiz.id),
         quizName: quiz.name,
       });
@@ -323,6 +334,7 @@ export default function CourseDetail() {
     try {
       const path = await invoke<string>('export_ppt_answers', {
         courseId: id,
+        courseName,
         coursewareId: String(ppt.courseware_id),
         pptTitle: ppt.title,
       });
@@ -520,6 +532,7 @@ export default function CourseDetail() {
       try {
         await invoke<string>('export_work_answers', {
           courseId: id,
+          courseName,
           workId: work.exam_id,
           workName: work.title,
           workType: work.work_type,
@@ -543,6 +556,7 @@ export default function CourseDetail() {
       try {
         await invoke<string>('export_quiz_answers', {
           courseId: id,
+          courseName,
           leafId: String(quiz.id),
           quizName: quiz.name,
         });
