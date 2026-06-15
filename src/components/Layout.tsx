@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Layout as AntLayout, Menu, Typography, Avatar, Dropdown, Space, theme } from 'antd';
 import {
@@ -32,6 +32,31 @@ export default function AppLayout() {
   const userInfo = useAuthStore((s) => s.userInfo);
   const logout = useAuthStore((s) => s.logout);
   const { token } = theme.useToken();
+
+  // 记住「课程」区段最近访问的子路径（列表 `/` 或某课程详情 `/course/:id`）。
+  // 这样从别的菜单（设置 / 答案文件…）切回「课程列表」时能回到原来的课程详情，
+  // 而非每次都丢失位置、回到「我的课程」列表（课程详情的 UI 选择由 store 按 courseId 持久化，
+  // 配合此处的位置记忆即可完整恢复现场）。
+  const lastCoursePathRef = useRef('/');
+  useEffect(() => {
+    if (location.pathname === '/' || location.pathname.startsWith('/course/')) {
+      lastCoursePathRef.current = location.pathname;
+    }
+  }, [location.pathname]);
+
+  // 课程详情（/course/:id）属于「课程列表」区段，菜单高亮归到 `/`，避免详情页时无任何高亮
+  const selectedKey = location.pathname.startsWith('/course/') ? '/' : location.pathname;
+
+  const handleMenuClick = (key: string) => {
+    if (key === '/') {
+      // 已在课程区段内：回到列表 `/`；在区段外：回到最近浏览的课程页（列表或详情）
+      const inCourses =
+        location.pathname === '/' || location.pathname.startsWith('/course/');
+      navigate(inCourses ? '/' : lastCoursePathRef.current);
+      return;
+    }
+    navigate(key);
+  };
 
   const handleSwitchOrLogout = async () => {
     await logout();
@@ -75,9 +100,9 @@ export default function AppLayout() {
         </div>
         <Menu
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={[selectedKey]}
           items={menuItems}
-          onClick={({ key }) => navigate(key)}
+          onClick={({ key }) => handleMenuClick(key)}
         />
       </Sider>
       <AntLayout style={{ height: '100%' }}>
