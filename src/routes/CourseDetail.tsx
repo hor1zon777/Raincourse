@@ -16,10 +16,10 @@ import {
   CloseCircleOutlined,
 } from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
-import { useCourseStore } from '../stores/courseStore';
+import { useCourseStore, DEFAULT_COURSE_UI } from '../stores/courseStore';
 import { normalizeError } from '../utils/errors';
 import { useTauriListens } from '../utils/useTauriListens';
-import type { Work, ExportResult, QuizAnswerEvent, QuizAnswerResult, LearnSchedule, QuizScore } from '../types';
+import type { Work, ExportResult, QuizAnswerEvent, QuizAnswerResult, LearnSchedule, QuizScore, ScoreDetailItem, Ppt } from '../types';
 
 const { Title } = Typography;
 
@@ -59,11 +59,30 @@ export default function CourseDetail() {
   const [chapterLoading, setChapterLoading] = useState(false);
   // 章节测验「导出答案」的独立 loading（用 leaf_id；与作业 courseware_id 分开，避免撞号）
   const [exportingQuiz, setExportingQuiz] = useState<number | null>(null);
+  // 课件试题「导出答案」的独立 loading（用 courseware_id）
+  const [exportingPpt, setExportingPpt] = useState<number | null>(null);
   // 章节任务请求序号：消除快速切课时旧结果写回新课
   const chapterReqRef = useRef(0);
-  const [typeFilter, setTypeFilter] = useState<number[]>([]);
-  const [selectedTaskIds, setSelectedTaskIds] = useState<number[]>([]);
-  const [nameFilter, setNameFilter] = useState('');
+
+  // ===== 页面 UI 选择状态（按 courseId 持久化到 store，切 Tab/重渲染/重挂载都不丢）=====
+  const courseUI = useCourseStore((s) => (id ? s.courseUI[id] : undefined)) ?? DEFAULT_COURSE_UI;
+  const patchCourseUI = useCourseStore((s) => s.patchCourseUI);
+  const { activeTab, selectedTaskIds, selectedQuizIds, typeFilter, nameFilter } = courseUI;
+  const setActiveTab = (v: string) => {
+    if (id) patchCourseUI(id, { activeTab: v });
+  };
+  const setSelectedTaskIds = (v: number[]) => {
+    if (id) patchCourseUI(id, { selectedTaskIds: v });
+  };
+  const setSelectedQuizIds = (v: number[]) => {
+    if (id) patchCourseUI(id, { selectedQuizIds: v });
+  };
+  const setTypeFilter = (v: number[]) => {
+    if (id) patchCourseUI(id, { typeFilter: v });
+  };
+  const setNameFilter = (v: string) => {
+    if (id) patchCourseUI(id, { nameFilter: v });
+  };
 
   // ===== 自动答题状态 =====
   const [answering, setAnswering] = useState(false); // 答题进行中（与导出互斥）
@@ -74,14 +93,27 @@ export default function CourseDetail() {
   const [quizResult, setQuizResult] = useState<QuizAnswerResult | null>(null); // 汇总
   // 当前答题测验的 leaf_id（供「停止」使用）
   const currentQuizLeafRef = useRef<number | null>(null);
+  // 准备阶段提示（status==='preparing' 的事件写入此处，替代静态「正在准备…」）
+  const [prepMessage, setPrepMessage] = useState<string | null>(null);
+
+  // ===== 批量自动答题 =====
+  const [batchQuizActive, setBatchQuizActive] = useState(false); // 批量进行中
+  const [batchQuizProgress, setBatchQuizProgress] = useState<{ done: number; total: number; name: string } | null>(null);
+  // 已完成测验的汇总（批量模式下抽屉展示）
+  const [batchSummaries, setBatchSummaries] = useState<{ name: string; result: QuizAnswerResult; dryRun: boolean }[]>([]);
+  // 批量停止标志：在「测验之间」中断；单测验内停止仍走 stop_quiz_auto_answer
+  const batchQuizStopRef = useRef(false);
 
   // ===== 完成情况 / 得分 =====
   // schedule: { leaf_id: 完成度 }（1=完成、0=未完成、测验为浮点）
   const [schedule, setSchedule] = useState<Record<string, number>>({});
   const [totalSchedule, setTotalSchedule] = useState(0); // 整体完成度 0~1
-  // quizScores: { leaf_id: 得分汇总 }（来自本地已导出 quiz_json）
+  // quizScores: { leaf_id: 得分汇总 }（来自本地已导出 quiz_json，作为服务器成绩的回退）
   const [quizScores, setQuizScores] = useState<Record<string, QuizScore>>({});
-  const scheduleReqRef = useRef(0); // 防快速切课竞态
+  // scoreDetail: { leaf_id: {user_score, leaf_score} }（服务器权威成绩单，优先展示）
+  const [scoreDetail, setScoreDetail] = useState<Record<string, ScoreDetailItem>>({});
+  const scheduleReqRef = useRef(0); // 防快速切课竞态（完成情况 schedule）
+  const scoreReqRef = useRef(0); // 防快速切课竞态（成绩明细 score）
 
   // 拉取章节任务（含测验/练习）；用请求序号防止快速切课的旧结果覆盖新课
   const fetchChapterTasks = useCallback(async () => {
@@ -128,29 +160,61 @@ export default function CourseDetail() {
     }
   }, []);
 
+  // 拉取服务器权威成绩明细（按 leaf_id）；用请求序号防快速切课竞态
+  const fetchScoreDetail = useCallback(async () => {
+    if (!id) return;
+    const seq = ++scoreReqRef.current;
+    try {
+      const res = await invoke<Record<string, ScoreDetailItem>>('get_score_detail', { courseId: id });
+      if (seq !== scoreReqRef.current) return;
+      setScoreDetail(res || {});
+    } catch (e) {
+      // 成绩获取失败不打断主流程，仅提示
+      if (seq === scoreReqRef.current) {
+        message.error(`获取得分失败: ${normalizeError(e).message}`);
+      }
+    }
+  }, [id]);
+
   useEffect(() => {
     if (id) {
       // 切换到新课程时先清空旧 works/ppts，避免上一个课程的数据闪现
       setCourseContext(id);
       setChapterTasks([]);
-      setSelectedTaskIds([]);
-      setNameFilter('');
-      setTypeFilter([]);
+      // 选择 / 筛选 / 当前 Tab 由 store 按 courseId 持久化，切 Tab/重渲染/重挂载都保留，
+      // 不在此清空（不同课程天然各有独立分桶）。
       setSchedule({});
       setTotalSchedule(0);
+      setScoreDetail({});
       fetchWorks(id);
       fetchPpts(id);
       // 「作业列表」Tab 一进入即加载章节测验数据（测验表与批量导出都依赖它）
       fetchChapterTasks();
-      // 完成情况（schedule，按 leaf_id）+ 本地已导出测验得分
+      // 完成情况（schedule，按 leaf_id）+ 本地已导出测验得分 + 服务器权威成绩
       fetchSchedule();
       fetchQuizScores();
+      fetchScoreDetail();
     }
     // 切换课程 / 卸载时中断正在进行的批量导出，避免旧循环继续写 state 或发请求
     return () => {
       batchStopRef.current = true;
     };
-  }, [id, fetchWorks, fetchPpts, setCourseContext, fetchChapterTasks, fetchSchedule, fetchQuizScores]);
+  }, [id, fetchWorks, fetchPpts, setCourseContext, fetchChapterTasks, fetchSchedule, fetchQuizScores, fetchScoreDetail]);
+
+  // 完成情况更新后，把「已完成」（完成度≥1）的任务/测验从勾选中剔除：
+  // 配合勾选框 disabled，实现「已完成不能再次被选择」。
+  useEffect(() => {
+    if (!id) return;
+    const done = (leafId: number) => (schedule[String(leafId)] ?? 0) >= 1;
+    const prunedTasks = selectedTaskIds.filter((tid) => !done(tid));
+    const prunedQuizzes = selectedQuizIds.filter((qid) => !done(qid));
+    if (
+      prunedTasks.length !== selectedTaskIds.length ||
+      prunedQuizzes.length !== selectedQuizIds.length
+    ) {
+      patchCourseUI(id, { selectedTaskIds: prunedTasks, selectedQuizIds: prunedQuizzes });
+    }
+  }, [schedule, id, selectedTaskIds, selectedQuizIds, patchCourseUI]);
 
   // 监听自动答题进度事件（独立事件名，不与刷课 study-* 混用）
   useTauriListens([
@@ -158,6 +222,13 @@ export default function CourseDetail() {
       event: 'quiz-answer-progress',
       handler: (e) => {
         const evt = e.payload as QuizAnswerEvent;
+        // 准备阶段：写入横幅提示，不进逐题列表
+        if (evt.status === 'preparing') {
+          setPrepMessage(evt.message || '正在准备…');
+          return;
+        }
+        // 收到首个真实题目事件即清空准备提示
+        setPrepMessage(null);
         setQuizEvents((prev) => {
           // 同一题（index 相同）由 running 更新为 done/failed/skipped，否则追加
           const i = prev.findIndex((x) => x.index === evt.index);
@@ -245,6 +316,24 @@ export default function CourseDetail() {
     }
   };
 
+  // 导出课件（PPT）随堂习题答案；落盘后会出现在「答案文件」页
+  const handleExportPpt = async (ppt: Ppt) => {
+    if (!id) return;
+    setExportingPpt(ppt.courseware_id);
+    try {
+      const path = await invoke<string>('export_ppt_answers', {
+        courseId: id,
+        coursewareId: String(ppt.courseware_id),
+        pptTitle: ppt.title,
+      });
+      message.success(`答案已导出: ${path}`);
+    } catch (e) {
+      message.error(`导出失败: ${normalizeError(e).message}`);
+    } finally {
+      setExportingPpt(null);
+    }
+  };
+
   // 执行自动答题（dryRun=true 仅生成答案、不提交）
   const runQuiz = async (quiz: ChapterTask, dryRun: boolean) => {
     if (!id || answering) return;
@@ -253,6 +342,10 @@ export default function CourseDetail() {
     setQuizDryRun(dryRun);
     setQuizEvents([]);
     setQuizResult(null);
+    setPrepMessage(null);
+    setBatchQuizActive(false);
+    setBatchSummaries([]);
+    setBatchQuizProgress(null);
     setQuizDrawerOpen(true);
     setAnswering(true);
     try {
@@ -266,10 +359,11 @@ export default function CourseDetail() {
         message.success(`试跑完成：可作答 ${res.from_local + res.from_ai}/${res.total} 题`);
       } else {
         message.success(
-          `答题完成：提交 ${res.submitted}/${res.total}，正确 ${res.correct}，失败 ${res.failed}，跳过 ${res.skipped}`,
+          `答题完成：提交 ${res.submitted}/${res.total}，正确 ${res.correct}，已答跳过 ${res.already_answered}，失败 ${res.failed}，跳过 ${res.skipped}`,
         );
-        // 提交后完成情况可能变化，刷新进度
+        // 提交后完成情况与成绩可能变化，刷新进度与得分
         fetchSchedule();
+        fetchScoreDetail();
       }
     } catch (e) {
       message.error(`自动答题失败: ${normalizeError(e).message}`);
@@ -302,12 +396,106 @@ export default function CourseDetail() {
           }
         />
       ),
-      onOk: () => runQuiz(quiz, false),
+      onOk: () => {
+        // 不返回 Promise：确认框立即关闭，由进度抽屉接管展示（避免框一直 loading）
+        void runQuiz(quiz, false);
+      },
     });
   };
 
-  // 停止当前自动答题
+  // 批量逐个执行选中测验的自动答题 / 试跑（串行复用单测验链路，汇总进抽屉）
+  const runBatchQuiz = async (list: ChapterTask[], dryRun: boolean) => {
+    if (!id || answering || list.length === 0) return;
+    batchQuizStopRef.current = false;
+    setBatchQuizActive(true);
+    setBatchSummaries([]);
+    setQuizResult(null);
+    setQuizDryRun(dryRun);
+    setQuizDrawerOpen(true);
+    setAnswering(true);
+    const total = list.length;
+    let done = 0;
+    try {
+      for (const quiz of list) {
+        if (batchQuizStopRef.current) break;
+        currentQuizLeafRef.current = quiz.id;
+        setQuizName(quiz.name);
+        setQuizEvents([]);
+        setPrepMessage(null);
+        setBatchQuizProgress({ done, total, name: quiz.name });
+        try {
+          const res = await invoke<QuizAnswerResult>('start_quiz_auto_answer', {
+            courseId: id,
+            leafId: String(quiz.id),
+            dryRun,
+          });
+          setBatchSummaries((prev) => [...prev, { name: quiz.name, result: res, dryRun }]);
+        } catch (e) {
+          message.error(`「${quiz.name}」答题失败: ${normalizeError(e).message}`);
+        }
+        done += 1;
+        setBatchQuizProgress({ done, total, name: quiz.name });
+        // 测验之间温和停顿，给「停止」留出时机
+        if (done < total && !batchQuizStopRef.current) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+    } finally {
+      const stopped = batchQuizStopRef.current;
+      setAnswering(false);
+      currentQuizLeafRef.current = null;
+      // 批量后刷新进度与得分
+      fetchQuizScores();
+      if (!dryRun) {
+        fetchSchedule();
+        fetchScoreDetail();
+      }
+      message[stopped ? 'warning' : 'success'](
+        `${stopped ? '已停止，' : ''}${dryRun ? '批量试跑' : '批量答题'}完成 ${done}/${total} 个测验`,
+      );
+    }
+  };
+
+  // 批量入口：试跑直接跑；真实提交走强警示确认
+  const handleBatchQuiz = (dryRun: boolean) => {
+    const list = quizzes.filter((q) => selectedQuizIds.includes(q.id) && !isCompleted(q.id));
+    if (list.length === 0) {
+      message.warning('请先勾选要答题的测验');
+      return;
+    }
+    if (dryRun) {
+      void runBatchQuiz(list, true);
+      return;
+    }
+    Modal.confirm({
+      title: `确认对选中的 ${list.length} 个测验批量自动答题？`,
+      width: 560,
+      okText: '我已知晓，开始批量答题',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      content: (
+        <Alert
+          type="warning"
+          showIcon
+          message="此操作会对所有选中测验真实提交答案并写入成绩"
+          description={
+            <div>
+              共 <strong>{list.length}</strong> 个测验将被<strong>逐题自动提交</strong>（约每秒 1 题），提交后
+              <strong>无法撤销</strong>。已提交过的小题会自动跳过；优先使用本地题库，未命中时调用 AI 兜底。
+              建议先用「批量试跑」预览。
+            </div>
+          }
+        />
+      ),
+      onOk: () => {
+        void runBatchQuiz(list, false);
+      },
+    });
+  };
+
+  // 停止当前自动答题（单测验 + 批量：兼置批量停止标志，使其在当前测验后中断）
   const handleStopQuiz = () => {
+    batchQuizStopRef.current = true;
     const leaf = currentQuizLeafRef.current;
     if (leaf == null) return;
     invoke('stop_quiz_auto_answer', { leafId: String(leaf) }).catch(() => {});
@@ -398,11 +586,13 @@ export default function CourseDetail() {
   };
 
   const handleStudySelected = () => {
-    if (selectedTaskIds.length === 0) {
-      message.warning('请先勾选要刷的任务');
+    // 已完成的任务不参与刷课
+    const ids = selectedTaskIds.filter((tid) => !isCompleted(tid));
+    if (ids.length === 0) {
+      message.warning('请先勾选要刷的任务（已完成的任务不可选）');
       return;
     }
-    navigate(`/study/${id}`, { state: { taskIds: selectedTaskIds } });
+    navigate(`/study/${id}`, { state: { taskIds: ids } });
   };
 
   const handleStudyAll = () => {
@@ -410,7 +600,8 @@ export default function CourseDetail() {
   };
 
   const handleSelectAllFiltered = () => {
-    const allFilteredIds = filteredTasks.map((t) => t.id);
+    // 全选当前筛选结果，但排除已完成任务
+    const allFilteredIds = filteredTasks.filter((t) => !isCompleted(t.id)).map((t) => t.id);
     setSelectedTaskIds(allFilteredIds);
   };
 
@@ -437,6 +628,9 @@ export default function CourseDetail() {
   // 去除浮点长尾（如 9.000001 → 9），最多两位小数
   const round2 = (n: number) => Math.round(n * 100) / 100;
 
+  // 任务/测验是否已完成（完成度 >= 1）；已完成的不可再次勾选
+  const isCompleted = (leafId: number) => (schedule[String(leafId)] ?? 0) >= 1;
+
   // 完成情况：schedule[leafId] → 已完成 / 未完成 / 百分比
   const renderProgress = (leafId: number) => {
     const v = schedule[String(leafId)];
@@ -446,8 +640,17 @@ export default function CourseDetail() {
     return <Tag color="blue">{Math.round(v * 100)}%</Tag>;
   };
 
-  // 得分：本地已导出测验汇总 quizScores[leafId] → 得分/满分（未导出显示 -）
+  // 得分：优先服务器权威成绩单 scoreDetail[leafId]（与雨课堂后台一致），
+  // 缺失时回退本地已导出测验汇总 quizScores[leafId]；都没有则显示 -
   const renderScore = (leafId: number) => {
+    const sd = scoreDetail[String(leafId)];
+    if (sd) {
+      return (
+        <span>
+          {round2(sd.user_score)}/{round2(sd.leaf_score)}
+        </span>
+      );
+    }
     const s = quizScores[String(leafId)];
     if (!s || s.count === 0) return <span style={{ color: '#bbb' }}>-</span>;
     return (
@@ -554,6 +757,22 @@ export default function CourseDetail() {
     { title: '序号', key: 'index', width: 60, render: (_: unknown, __: unknown, i: number) => i + 1 },
     { title: '课件名称', dataIndex: 'title', key: 'title' },
     { title: '页数', dataIndex: 'count', key: 'count', width: 80 },
+    {
+      title: '操作',
+      key: 'action',
+      width: 140,
+      render: (_: unknown, record: Ppt) => (
+        <Button
+          size="small"
+          icon={<DownloadOutlined />}
+          loading={exportingPpt === record.courseware_id}
+          disabled={batchExporting || answering}
+          onClick={() => handleExportPpt(record)}
+        >
+          导出答案
+        </Button>
+      ),
+    },
   ];
 
   const chapterColumns = [
@@ -598,6 +817,8 @@ export default function CourseDetail() {
     onChange: (keys: React.Key[]) => {
       setSelectedTaskIds(keys as number[]);
     },
+    // 已完成的任务禁止勾选
+    getCheckboxProps: (record: ChapterTask) => ({ disabled: isCompleted(record.id) }),
   };
 
   return (
@@ -620,7 +841,9 @@ export default function CourseDetail() {
       <Card>
         <Spin spinning={worksLoading || pptsLoading}>
           <Tabs
+            activeKey={activeTab}
             onChange={(key) => {
+              setActiveTab(key);
               if (key === 'chapters' && chapterTasks.length === 0) {
                 fetchChapterTasks();
               }
@@ -656,10 +879,39 @@ export default function CourseDetail() {
                     </div>
                     <Table columns={workColumns} dataSource={works} rowKey="courseware_id" pagination={false} size="middle" />
                     <div style={{ marginTop: 24 }}>
-                      <Typography.Text strong style={{ display: 'block', marginBottom: 12 }}>
-                        章节测验/练习 ({quizzes.length})
-                      </Typography.Text>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                        <Typography.Text strong>章节测验/练习 ({quizzes.length})</Typography.Text>
+                        {selectedQuizIds.length > 0 && (
+                          <Tag color="orange">已选 {selectedQuizIds.length} 个</Tag>
+                        )}
+                        <div style={{ flex: 1 }} />
+                        <Button
+                          size="small"
+                          icon={<ExperimentOutlined />}
+                          disabled={selectedQuizIds.length === 0 || batchExporting || answering}
+                          onClick={() => handleBatchQuiz(true)}
+                        >
+                          批量试跑 ({selectedQuizIds.length})
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          icon={<RobotOutlined />}
+                          disabled={selectedQuizIds.length === 0 || batchExporting || answering}
+                          onClick={() => handleBatchQuiz(false)}
+                        >
+                          批量自动答题 ({selectedQuizIds.length})
+                        </Button>
+                      </div>
                       <Table
+                        rowSelection={{
+                          selectedRowKeys: selectedQuizIds,
+                          onChange: (keys) => setSelectedQuizIds(keys as number[]),
+                          // 已完成的测验禁止勾选
+                          getCheckboxProps: (record: ChapterTask) => ({
+                            disabled: isCompleted(record.id),
+                          }),
+                        }}
                         columns={quizColumns}
                         dataSource={quizzes}
                         rowKey="id"
@@ -789,7 +1041,15 @@ export default function CourseDetail() {
       </Card>
 
       <Drawer
-        title={quizDryRun ? '自动答题 · 试跑（不提交）' : '自动答题进度'}
+        title={
+          batchQuizActive
+            ? quizDryRun
+              ? '批量自动答题 · 试跑（不提交）'
+              : '批量自动答题进度'
+            : quizDryRun
+              ? '自动答题 · 试跑（不提交）'
+              : '自动答题进度'
+        }
         width={520}
         open={quizDrawerOpen}
         onClose={() => {
@@ -804,9 +1064,20 @@ export default function CourseDetail() {
           ) : null
         }
       >
+        {batchQuizActive && batchQuizProgress && (
+          <div style={{ marginBottom: 12 }}>
+            <Typography.Text strong>
+              测验进度 {batchQuizProgress.done}/{batchQuizProgress.total}
+            </Typography.Text>
+            <Progress
+              percent={Math.round((batchQuizProgress.done / Math.max(batchQuizProgress.total, 1)) * 100)}
+              status={answering ? 'active' : 'normal'}
+            />
+          </div>
+        )}
         {quizName && (
           <Typography.Paragraph strong style={{ marginBottom: 8 }}>
-            {quizName}
+            {batchQuizActive ? `当前：${quizName}` : quizName}
           </Typography.Paragraph>
         )}
         {quizDryRun && (
@@ -816,6 +1087,9 @@ export default function CourseDetail() {
             style={{ marginBottom: 12 }}
             message="试跑模式：仅展示将提交的答案，不会真正提交。"
           />
+        )}
+        {prepMessage && (
+          <Alert type="info" showIcon style={{ marginBottom: 12 }} message={prepMessage} />
         )}
         {(() => {
           const total =
@@ -834,7 +1108,7 @@ export default function CourseDetail() {
           size="small"
           style={{ marginTop: 12 }}
           dataSource={quizEvents}
-          locale={{ emptyText: answering ? '正在准备...' : '暂无进度' }}
+          locale={{ emptyText: prepMessage ?? (answering ? '正在准备…' : '暂无进度') }}
           renderItem={(e: QuizAnswerEvent) => (
             <List.Item>
               <Space size="small" wrap>
@@ -861,7 +1135,7 @@ export default function CourseDetail() {
             </List.Item>
           )}
         />
-        {quizResult && (
+        {quizResult && !batchQuizActive && (
           <Alert
             style={{ marginTop: 12 }}
             type={quizResult.failed > 0 ? 'warning' : 'success'}
@@ -869,9 +1143,27 @@ export default function CourseDetail() {
             message={quizDryRun ? '试跑汇总' : '答题汇总'}
             description={
               quizDryRun
-                ? `共 ${quizResult.total} 题，可作答 ${quizResult.from_local + quizResult.from_ai}（题库 ${quizResult.from_local}、AI ${quizResult.from_ai}），跳过 ${quizResult.skipped}`
-                : `共 ${quizResult.total} 题，提交 ${quizResult.submitted}（题库 ${quizResult.from_local}、AI ${quizResult.from_ai}），正确 ${quizResult.correct}，失败 ${quizResult.failed}，跳过 ${quizResult.skipped}`
+                ? `共 ${quizResult.total} 题，可作答 ${quizResult.from_local + quizResult.from_ai}（题库 ${quizResult.from_local}、AI ${quizResult.from_ai}），已答跳过 ${quizResult.already_answered}，跳过 ${quizResult.skipped}`
+                : `共 ${quizResult.total} 题，提交 ${quizResult.submitted}（题库 ${quizResult.from_local}、AI ${quizResult.from_ai}），正确 ${quizResult.correct}，已答跳过 ${quizResult.already_answered}，失败 ${quizResult.failed}，跳过 ${quizResult.skipped}`
             }
+          />
+        )}
+        {batchQuizActive && batchSummaries.length > 0 && (
+          <List
+            size="small"
+            style={{ marginTop: 12 }}
+            header={<Typography.Text strong>已完成测验汇总</Typography.Text>}
+            dataSource={batchSummaries}
+            renderItem={(s) => (
+              <List.Item>
+                <Typography.Text style={{ fontSize: 12 }}>
+                  <Typography.Text strong>{s.name}</Typography.Text>：
+                  {s.dryRun
+                    ? `可作答 ${s.result.from_local + s.result.from_ai}/${s.result.total}（题库 ${s.result.from_local}、AI ${s.result.from_ai}），已答跳过 ${s.result.already_answered}`
+                    : `提交 ${s.result.submitted}（正确 ${s.result.correct}），已答跳过 ${s.result.already_answered}，失败 ${s.result.failed}，跳过 ${s.result.skipped}`}
+                </Typography.Text>
+              </List.Item>
+            )}
           />
         )}
       </Drawer>

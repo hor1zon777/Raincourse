@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Card, Typography, Button, Tag, Progress, List, message, Popconfirm, Alert } from 'antd';
+import { Card, Typography, Button, Tag, Progress, List, message, Popconfirm, Alert, Switch, Modal, Select, InputNumber } from 'antd';
 import {
   ArrowLeftOutlined,
   PlayCircleOutlined,
@@ -42,6 +42,95 @@ export default function StudyProgress() {
   const [totalTasks, setTotalTasks] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  // 刷课时是否对测验/练习真实自动答题（持久化、默认关）
+  const [autoAnswerQuiz, setAutoAnswerQuiz] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('rc_auto_answer_quiz') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  // 视频刷课播放倍率（持久化、默认 1x）
+  const [playbackRate, setPlaybackRate] = useState<number>(() => {
+    try {
+      const v = parseFloat(localStorage.getItem('rc_playback_rate') || '1');
+      return Number.isFinite(v) && v >= 1 && v <= 4 ? v : 1;
+    } catch {
+      return 1;
+    }
+  });
+
+  const changePlaybackRate = (v: number) => {
+    setPlaybackRate(v);
+    try {
+      localStorage.setItem('rc_playback_rate', String(v));
+    } catch {
+      /* localStorage 不可用时忽略持久化 */
+    }
+  };
+
+  // 并行观看任务数（持久化、默认 1=串行）
+  const [concurrency, setConcurrency] = useState<number>(() => {
+    try {
+      const v = parseInt(localStorage.getItem('rc_concurrency') || '1', 10);
+      return Number.isFinite(v) && v >= 1 && v <= 10 ? v : 1;
+    } catch {
+      return 1;
+    }
+  });
+
+  const changeConcurrency = (v: number | null) => {
+    const n = Math.min(10, Math.max(1, Math.round(v ?? 1)));
+    setConcurrency(n);
+    try {
+      localStorage.setItem('rc_concurrency', String(n));
+    } catch {
+      /* localStorage 不可用时忽略持久化 */
+    }
+  };
+
+  // 切换开关：开启需强警示二次确认（真实提交、不可逆）；关闭直接生效
+  const toggleAutoAnswer = (checked: boolean) => {
+    if (!checked) {
+      setAutoAnswerQuiz(false);
+      try {
+        localStorage.setItem('rc_auto_answer_quiz', '0');
+      } catch {
+        /* localStorage 不可用时忽略持久化 */
+      }
+      return;
+    }
+    Modal.confirm({
+      title: '开启「刷课时自动答测验/练习」？',
+      width: 540,
+      okText: '我已知晓，开启',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      content: (
+        <Alert
+          type="warning"
+          showIcon
+          message="开启后刷课遇到测验/练习会真实提交答案并写入成绩"
+          description={
+            <div>
+              刷课遇到<strong>测验/练习</strong>时将<strong>逐题自动提交</strong>（约每秒 1 题），提交后
+              <strong>无法撤销</strong>。已提交过的小题会自动跳过；优先使用本地题库，未命中时调用 AI 兜底。
+              关闭时测验仍按现状跳过。
+            </div>
+          }
+        />
+      ),
+      onOk: () => {
+        setAutoAnswerQuiz(true);
+        try {
+          localStorage.setItem('rc_auto_answer_quiz', '1');
+        } catch {
+          /* localStorage 不可用时忽略持久化 */
+        }
+      },
+    });
+  };
 
   // 计时器
   useEffect(() => {
@@ -109,6 +198,9 @@ export default function StudyProgress() {
       await invoke('start_auto_study', {
         courseId: id,
         taskIds: customTaskIds ?? null,
+        autoAnswerQuiz,
+        playbackRate,
+        concurrency,
       });
     } catch (e) {
       const err = normalizeError(e);
@@ -118,7 +210,7 @@ export default function StudyProgress() {
       setRunning(false);
       setStopping(false);
     }
-  }, [id, running, stopping, customTaskIds]);
+  }, [id, running, stopping, customTaskIds, autoAnswerQuiz, playbackRate, concurrency]);
 
   const stopStudy = useCallback(async () => {
     setStopping(true);
@@ -147,7 +239,11 @@ export default function StudyProgress() {
   const failedCount = tasks.filter((t) => t.status === 'failed').length;
   const effectiveTotal = totalTasks > 0 ? totalTasks : tasks.length;
   const overallPercent = effectiveTotal > 0 ? Math.round((doneCount / effectiveTotal) * 100) : 0;
+  // 并行时可能有多个任务同时「处理中」
+  const runningTasks = tasks.filter((t) => t.status === 'running');
   const currentTask = tasks.find((t) => t.index === currentIndex && t.status === 'running');
+  // 并行到达顺序不定，按 index 稳定排序展示
+  const sortedTasks = [...tasks].sort((a, b) => a.index - b.index);
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -163,6 +259,37 @@ export default function StudyProgress() {
         </Button>
         <Title level={4} style={{ margin: 0 }}>自动刷课</Title>
         <div style={{ flex: 1 }} />
+        <span style={{ color: '#666', fontSize: 13 }}>视频倍率</span>
+        <Select
+          value={playbackRate}
+          onChange={changePlaybackRate}
+          disabled={running || stopping}
+          style={{ width: 88 }}
+          options={[
+            { value: 1, label: '1x' },
+            { value: 1.25, label: '1.25x' },
+            { value: 1.5, label: '1.5x' },
+            { value: 2, label: '2x' },
+            { value: 3, label: '3x' },
+          ]}
+        />
+        <span style={{ color: '#666', fontSize: 13 }}>并行</span>
+        <InputNumber
+          value={concurrency}
+          onChange={changeConcurrency}
+          disabled={running || stopping}
+          min={1}
+          max={10}
+          step={1}
+          style={{ width: 72 }}
+        />
+        <Switch
+          checked={autoAnswerQuiz}
+          onChange={toggleAutoAnswer}
+          disabled={running || stopping}
+          checkedChildren="测验自动答题"
+          unCheckedChildren="测验跳过"
+        />
         {running ? (
           <Popconfirm
             title="确定停止刷课？"
@@ -192,6 +319,36 @@ export default function StudyProgress() {
           </Button>
         )}
       </div>
+
+      {autoAnswerQuiz && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="已开启「刷课时自动答测验/练习」：遇到测验会真实提交答案并写入成绩（不可逆）"
+          description="已提交过的小题自动跳过；优先题库、未命中调用 AI 兜底。如需仅刷视频/课件，请关闭上方开关。"
+        />
+      )}
+
+      {playbackRate >= 3 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`已选 ${playbackRate}x 倍率`}
+          description="真实倍速模式下，倍率越高、后台记录的观看时长越短（≈视频时长÷倍率）。真实播放器通常最高 2x，3x 及以上可信度略低，建议常用 1.5x~2x。"
+        />
+      )}
+
+      {concurrency >= 4 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`已设并行 ${concurrency}（同时观看 ${concurrency} 个任务）`}
+          description="并行越多总耗时越短，但同一账号会同时发出更多心跳，被风控判定异常的风险也越高。建议 2~3 个。"
+        />
+      )}
 
       {customTaskIds && (
         <Alert
@@ -224,10 +381,16 @@ export default function StudyProgress() {
                 预计剩余: {formatTime(Math.round(((elapsed / doneCount) * (effectiveTotal - doneCount))))}
               </span>
             )}
-            {currentTask && (
+            {runningTasks.length > 1 ? (
               <span style={{ color: '#1677ff' }}>
-                当前: {currentTask.name}
+                进行中: {runningTasks.length} 个
               </span>
+            ) : (
+              currentTask && (
+                <span style={{ color: '#1677ff' }}>
+                  当前: {currentTask.name}
+                </span>
+              )
             )}
           </div>
         </Card>
@@ -235,7 +398,7 @@ export default function StudyProgress() {
 
       <Card>
         <List
-          dataSource={tasks}
+          dataSource={sortedTasks}
           locale={{ emptyText: '点击"开始刷课"启动自动学习任务' }}
           renderItem={(task) => (
             <List.Item

@@ -105,7 +105,7 @@ export interface QuizAnswerEvent {
   index: number;
   total: number;
   problem_id: string;
-  /** running | done | failed | skipped */
+  /** preparing | running | done | failed | skipped */
   status: string;
   /** 答案来源：local（题库）| ai */
   source?: 'local' | 'ai' | null;
@@ -122,6 +122,8 @@ export interface QuizAnswerResult {
   from_ai: number;
   failed: number;
   skipped: number;
+  /** 已提交过而被跳过的题数（不重复作答） */
+  already_answered: number;
 }
 
 // 课程学习进度（get_learn_schedule）；leaf_schedules 按 leaf_id 索引：1=完成、0=未完成、测验为浮点完成度
@@ -136,4 +138,11 @@ export interface QuizScore {
   total: number;
   answered: number;
   count: number;
+}
+
+// 服务器权威成绩明细（get_score_detail 返回 Record<string, ScoreDetailItem>，key=leaf_id）。
+// user_score=个人得分、leaf_score=满分，与雨课堂后台成绩单一致，优先于本地导出汇总展示。
+export interface ScoreDetailItem {
+  user_score: number;
+  leaf_score: number;
 }

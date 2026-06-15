@@ -61,9 +61,9 @@ async fn qr_login_inner(app: AppHandle) -> Result<LoginSuccessEvent, AppError> {
 
     // 监听消息（每次最多等 WS_RECV_TIMEOUT）
     loop {
-        let next = timeout(WS_RECV_TIMEOUT, read.next()).await.map_err(|_| {
-            AppError::WebSocket("等待消息超时（30s 内无响应）".to_string())
-        })?;
+        let next = timeout(WS_RECV_TIMEOUT, read.next())
+            .await
+            .map_err(|_| AppError::WebSocket("等待消息超时（30s 内无响应）".to_string()))?;
 
         let msg = match next {
             Some(m) => m.map_err(|e| AppError::WebSocket(format!("接收消息失败: {}", e)))?,

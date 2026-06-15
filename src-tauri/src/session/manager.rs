@@ -61,10 +61,7 @@ fn session_file_path(app_data_dir: &Path, username: &str) -> Result<PathBuf, App
     let path = dir.join(format!("{}.{}", clean, SESSION_EXT));
     // 二次校验：清洗后路径必须仍在 users 目录内
     if !path.starts_with(&dir) {
-        return Err(AppError::InvalidInput(format!(
-            "非法用户名: {}",
-            username
-        )));
+        return Err(AppError::InvalidInput(format!("非法用户名: {}", username)));
     }
     Ok(path)
 }

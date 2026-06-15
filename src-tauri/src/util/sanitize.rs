@@ -18,9 +18,7 @@ const INVALID_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|', '
 pub fn sanitize_filename(input: &str) -> Result<String, AppError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(AppError::InvalidInput(
-            "文件名不能为空".to_string(),
-        ));
+        return Err(AppError::InvalidInput("文件名不能为空".to_string()));
     }
 
     let mut cleaned: String = trimmed
@@ -40,11 +38,11 @@ pub fn sanitize_filename(input: &str) -> Result<String, AppError> {
     }
 
     // 去掉首尾的点和空格（Windows 不允许）
-    cleaned = cleaned.trim_matches(|c: char| c == '.' || c == ' ').to_string();
+    cleaned = cleaned
+        .trim_matches(|c: char| c == '.' || c == ' ')
+        .to_string();
     if cleaned.is_empty() {
-        return Err(AppError::InvalidInput(
-            "文件名无有效字符".to_string(),
-        ));
+        return Err(AppError::InvalidInput("文件名无有效字符".to_string()));
     }
 
     // 限制长度（保留扩展空间）
@@ -63,10 +61,7 @@ pub fn safe_join(base_dir: &Path, filename: &str) -> Result<PathBuf, AppError> {
 
     // 规范化前先做字面前缀校验
     if !candidate.starts_with(base_dir) {
-        return Err(AppError::InvalidInput(format!(
-            "非法路径: {}",
-            filename
-        )));
+        return Err(AppError::InvalidInput(format!("非法路径: {}", filename)));
     }
     Ok(candidate)
 }

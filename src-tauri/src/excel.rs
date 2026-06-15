@@ -52,8 +52,7 @@ pub fn export_exam_excel(
     // 读取题目和答案文件
     let question_data =
         json_store::load_json(&exam_dir, &format!("{}_question.json", exam_id_clean))?;
-    let answer_data =
-        json_store::load_json(&exam_dir, &format!("{}_answer.json", exam_id_clean))?;
+    let answer_data = json_store::load_json(&exam_dir, &format!("{}_answer.json", exam_id_clean))?;
 
     let problems = question_data["exam"]["data"]["problems"]
         .as_array()
@@ -85,8 +84,17 @@ pub fn export_exam_excel(
     let header_fmt = Format::new().set_bold();
 
     let headers = [
-        "题型", "试题标题", "题目", "选项A", "选项B", "选项C", "选项D",
-        "选项E", "选项F", "正确答案", "解析",
+        "题型",
+        "试题标题",
+        "题目",
+        "选项A",
+        "选项B",
+        "选项C",
+        "选项D",
+        "选项E",
+        "选项F",
+        "正确答案",
+        "解析",
     ];
     for (col, header) in headers.iter().enumerate() {
         worksheet
@@ -165,7 +173,8 @@ pub fn export_exam_excel(
     if !excel_dir.exists() {
         std::fs::create_dir_all(&excel_dir)?;
     }
-    let safe_name = sanitize::sanitize_filename(exam_name).unwrap_or_else(|_| exam_id_clean.clone());
+    let safe_name =
+        sanitize::sanitize_filename(exam_name).unwrap_or_else(|_| exam_id_clean.clone());
     let file_path = excel_dir.join(format!("{}.xlsx", safe_name));
     if !file_path.starts_with(&excel_dir) {
         return Err(AppError::InvalidInput(format!("非法文件名: {}", exam_name)));
@@ -227,12 +236,7 @@ fn format_answer(type_text: &str, raw: Option<&Value>, options: Option<&Vec<Valu
                     .map(|k| {
                         let val = &obj[*k];
                         if let Some(arr) = val.as_array() {
-                            format!(
-                                "【{}】",
-                                arr.first()
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                            )
+                            format!("【{}】", arr.first().and_then(|v| v.as_str()).unwrap_or(""))
                         } else if let Some(s) = val.as_str() {
                             format!("【{}】", s)
                         } else {

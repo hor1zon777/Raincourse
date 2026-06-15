@@ -107,7 +107,10 @@ impl RainClient {
     pub fn common_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(UA));
-        headers.insert(REFERER, HeaderValue::from_static("https://www.yuketang.cn/"));
+        headers.insert(
+            REFERER,
+            HeaderValue::from_static("https://www.yuketang.cn/"),
+        );
         if let Some(csrf) = self.get_csrftoken() {
             if let Ok(v) = HeaderValue::from_str(&csrf) {
                 headers.insert("X-Csrftoken", v);
@@ -156,7 +159,10 @@ impl RainClient {
     pub fn exam_headers(&self, exam_id: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(UA));
-        headers.insert("Accept", HeaderValue::from_static("application/json, text/plain, */*"));
+        headers.insert(
+            "Accept",
+            HeaderValue::from_static("application/json, text/plain, */*"),
+        );
         headers.insert("Content-Type", HeaderValue::from_static("application/json"));
         headers.insert("X-Client", HeaderValue::from_static("web"));
         headers.insert("Xtbz", HeaderValue::from_static("cloud"));
@@ -280,11 +286,7 @@ impl RainClient {
         Ok(())
     }
 
-    pub async fn get_token_work(
-        &self,
-        course_id: &str,
-        work_id: &str,
-    ) -> Result<Value, AppError> {
+    pub async fn get_token_work(&self, course_id: &str, work_id: &str) -> Result<Value, AppError> {
         let url = format!("{}/v/exam/gen_token", BASE_URL);
         let mut headers = self.common_headers();
         let referer = format!(
@@ -396,10 +398,7 @@ impl RainClient {
     }
 
     pub async fn get_all_question(&self, exam_id: &str) -> Result<Value, AppError> {
-        let url = format!(
-            "{}/exam_room/show_paper?exam_id={}",
-            EXAM_BASE_URL, exam_id
-        );
+        let url = format!("{}/exam_room/show_paper?exam_id={}", EXAM_BASE_URL, exam_id);
         let resp = self
             .client
             .get(&url)
@@ -438,7 +437,10 @@ impl RainClient {
     ) -> Result<Value, AppError> {
         let url = format!("{}/mooc-api/v1/lms/learn/course/pub_new_pro", BASE_URL);
         let mut headers = self.classroom_headers(classroom_id);
-        headers.insert("Origin", HeaderValue::from_static("https://examination.xuetangx.com"));
+        headers.insert(
+            "Origin",
+            HeaderValue::from_static("https://examination.xuetangx.com"),
+        );
         let body = serde_json::json!({"cid": classroom_id, "new_id": [work_id]});
         let resp = self
             .client
@@ -455,10 +457,7 @@ impl RainClient {
     // ========== 章节/刷课 API ==========
 
     pub async fn get_course_sign(&self, class_id: &str) -> Result<Value, AppError> {
-        let url = format!(
-            "{}/v2/api/web/classrooms/{}?role=5",
-            BASE_URL, class_id
-        );
+        let url = format!("{}/v2/api/web/classrooms/{}?role=5", BASE_URL, class_id);
         let resp = self
             .client
             .get(&url)
@@ -505,6 +504,29 @@ impl RainClient {
         let url = format!(
             "{}/mooc-api/v1/lms/learn/course/schedule?cid={}&sign={}&term=latest&uv_id={}",
             BASE_URL, class_id, course_sign, uv_id
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.classroom_headers(class_id))
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+        Ok(resp)
+    }
+
+    /// 获取课程成绩明细（c27 接口，按 sku_id）。
+    ///
+    /// `GET {BASE_URL}/c27/online_courseware/schedule/score_detail/single/{sku_id}/0/`
+    /// 复用 classroom_headers（含 Xtbz=ykt + Classroom-Id + X-Client + xt-agent +
+    /// X-Csrftoken），与真实抓包一致（无 query 参数）。返回 `data.leaf_level_infos[]`，
+    /// 每项含 `id`(=leaf_id)、`user_score`(个人得分)、`leaf_score`(满分)、
+    /// `schedule`(完成度) 等，是与雨课堂后台成绩单一致的权威来源。
+    pub async fn get_score_detail(&self, class_id: &str, sku_id: &str) -> Result<Value, AppError> {
+        let url = format!(
+            "{}/c27/online_courseware/schedule/score_detail/single/{}/0/",
+            BASE_URL, sku_id
         );
         let resp = self
             .client
@@ -627,7 +649,9 @@ impl RainClient {
         // id 类字段优先以数字提交（真实 problem_id 在响应中为数字），纯数字串转 Number，
         // 否则退回字符串。待联调：若服务端要求字符串可在此调整。
         let id_value = |s: &str| -> Value {
-            s.parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::String(s.to_string()))
+            s.parse::<i64>()
+                .map(Value::from)
+                .unwrap_or_else(|_| Value::String(s.to_string()))
         };
         let body = serde_json::json!({
             "classroom_id": id_value(class_id),
@@ -671,7 +695,10 @@ impl RainClient {
         match resp.json::<Value>().await {
             Ok(val) => Ok(Some(val)),
             Err(e) => {
-                log::debug!("get_video_progress JSON 解析失败（可能视频暂无进度记录）: {}", e);
+                log::debug!(
+                    "get_video_progress JSON 解析失败（可能视频暂无进度记录）: {}",
+                    e
+                );
                 Ok(None)
             }
         }

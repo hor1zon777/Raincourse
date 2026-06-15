@@ -74,14 +74,10 @@ pub fn encrypt(app_data_dir: &Path, plaintext: &[u8]) -> Result<String, AppError
 
 /// 解密容器字符串，返回明文 bytes。
 pub fn decrypt(app_data_dir: &Path, container: &str) -> Result<Vec<u8>, AppError> {
-    let blob: EncryptedBlob =
-        serde_json::from_str(container).map_err(AppError::Json)?;
+    let blob: EncryptedBlob = serde_json::from_str(container).map_err(AppError::Json)?;
 
     if blob.v != VERSION {
-        return Err(AppError::General(format!(
-            "不支持的凭据版本: {}",
-            blob.v
-        )));
+        return Err(AppError::General(format!("不支持的凭据版本: {}", blob.v)));
     }
 
     let nonce_bytes = base64_decode(&blob.n)?;
@@ -102,8 +98,7 @@ pub fn decrypt(app_data_dir: &Path, container: &str) -> Result<Vec<u8>, AppError
 }
 
 // ---- 简易 base64（避免再引入 base64 crate）----
-const B64_CHARS: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
@@ -145,10 +140,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, AppError> {
         }
     }
 
-    let bytes: Vec<u8> = input
-        .bytes()
-        .filter(|b| !b.is_ascii_whitespace())
-        .collect();
+    let bytes: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
     if bytes.len() % 4 != 0 {
         return Err(AppError::General("base64 长度非法".to_string()));
     }
@@ -158,8 +150,16 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, AppError> {
         let pad = chunk.iter().rev().take_while(|&&b| b == b'=').count();
         let v0 = idx(chunk[0]).ok_or_else(|| AppError::General("base64 非法字符".into()))?;
         let v1 = idx(chunk[1]).ok_or_else(|| AppError::General("base64 非法字符".into()))?;
-        let v2 = if pad >= 2 { 0 } else { idx(chunk[2]).ok_or_else(|| AppError::General("base64 非法字符".into()))? };
-        let v3 = if pad >= 1 { 0 } else { idx(chunk[3]).ok_or_else(|| AppError::General("base64 非法字符".into()))? };
+        let v2 = if pad >= 2 {
+            0
+        } else {
+            idx(chunk[2]).ok_or_else(|| AppError::General("base64 非法字符".into()))?
+        };
+        let v3 = if pad >= 1 {
+            0
+        } else {
+            idx(chunk[3]).ok_or_else(|| AppError::General("base64 非法字符".into()))?
+        };
         let n = (v0 << 18) | (v1 << 12) | (v2 << 6) | v3;
         out.push(((n >> 16) & 0xFF) as u8);
         if pad < 2 {

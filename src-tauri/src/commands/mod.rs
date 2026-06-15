@@ -14,15 +14,14 @@ use crate::models::exam::{ExportResult, Ppt, Work, WorkStatus};
 use crate::session::manager as sess;
 use crate::storage::json_store;
 use crate::study::{self, ChapterTask};
+use crate::util::json_str_or_num;
 use crate::{excel, ws};
 
-use std::time::Duration;
 use serde::Serialize;
-use tokio::time::sleep;
 
-use crate::ai::client::AiClient;
 use crate::ai::config::{self as ai_config, AiConfig};
-use crate::ai::encode::{self, ProblemType};
+use crate::ai::encode;
+use crate::ai::quiz_runner::{self, QuizAnswerResult};
 
 /// 全局应用状态。
 ///
@@ -96,16 +95,14 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
         .map_err(|e| AppError::Config(format!("无法获取应用数据目录: {}", e)))
 }
 
-/// 把 JSON 值取成字符串，兼容「数字或字符串」两种类型；null 返回空串。
+/// 把 JSON 值取成 f64，兼容「数字或数字字符串」；无法解析返回 0.0。
 ///
-/// 雨课堂部分字段（如 leaf_type_id / sku_id）在不同响应里可能是数字或字符串，
-/// 与 `export_work_answers` 对 `user_id` 的兼容处理保持一致。
-fn json_str_or_num(v: &Value) -> String {
-    match v.as_str() {
-        Some(s) => s.to_string(),
-        None if v.is_null() => String::new(),
-        None => v.to_string().replace('"', ""),
-    }
+/// 雨课堂成绩字段大多是数字（如 `user_score: 2.7`），个别是字符串
+/// （如 `user_final_score: "82.48"`），统一在此兜底，避免类型差异导致丢分。
+fn json_f64(v: &Value) -> f64 {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+        .unwrap_or(0.0)
 }
 
 // ========== 认证 Commands ==========
@@ -117,10 +114,7 @@ pub async fn init_client(state: State<'_, AppState>) -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub async fn start_qr_login(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<Value, AppError> {
+pub async fn start_qr_login(app: AppHandle, state: State<'_, AppState>) -> Result<Value, AppError> {
     // 入口重置 client：丢弃 init_client 等任何遗留 cookies，让本次扫码登录
     // 从一个完全干净的 jar 开始，避免新 session 混入旧匿名 cookie
     let client = state.reset_client();
@@ -328,14 +322,8 @@ pub async fn get_course_list(state: State<'_, AppState>) -> Result<Vec<Course>, 
         .map(|item| Course {
             classroom_id: item["classroom_id"].as_i64().unwrap_or(0),
             course_id: item["course"]["id"].as_i64().unwrap_or(0),
-            course_name: item["course"]["name"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-            teacher_name: item["teacher"]["name"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
+            course_name: item["course"]["name"].as_str().unwrap_or("").to_string(),
+            teacher_name: item["teacher"]["name"].as_str().unwrap_or("").to_string(),
         })
         .collect();
 
@@ -365,7 +353,11 @@ pub async fn get_course_works(
                 item["content"]["leaf_type_id"]
                     .as_i64()
                     .map(|v| v.to_string())
-                    .or_else(|| item["content"]["leaf_type_id"].as_str().map(|s| s.to_string()))
+                    .or_else(|| {
+                        item["content"]["leaf_type_id"]
+                            .as_str()
+                            .map(|s| s.to_string())
+                    })
                     .unwrap_or_else(|| courseware_id.to_string())
             } else {
                 courseware_id.to_string()
@@ -438,7 +430,10 @@ pub async fn export_work_answers(
 
     if token_resp["success"].as_bool() == Some(false) {
         return Err(AppError::ApiError(
-            token_resp["msg"].as_str().unwrap_or("获取 token 失败").to_string(),
+            token_resp["msg"]
+                .as_str()
+                .unwrap_or("获取 token 失败")
+                .to_string(),
         ));
     }
 
@@ -447,7 +442,10 @@ pub async fn export_work_answers(
         Some(s) => s.to_string(),
         None => token_resp["data"]["user_id"].to_string().replace('"', ""),
     };
-    let token = token_resp["data"]["token"].as_str().unwrap_or("").to_string();
+    let token = token_resp["data"]["token"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
 
     // 3. 登录考试平台
     client.get_exam_login(&work_id, &user_id, &token).await?;
@@ -465,7 +463,9 @@ pub async fn export_work_answers(
         let path = json_store::save_json(&dir, &work_id, &answer_data, &info)?;
         Ok(path)
     } else {
-        Err(AppError::ApiError("获取答案失败，请检查是否可以查看试卷".into()))
+        Err(AppError::ApiError(
+            "获取答案失败，请检查是否可以查看试卷".into(),
+        ))
     }
 }
 
@@ -523,6 +523,51 @@ pub async fn export_quiz_answers(
         "exam_type": "章节测验"
     });
     let filename = format!("quiz_{}", leaf_id);
+    let path = json_store::save_json(&dir, &filename, &resp, &info)?;
+    Ok(path)
+}
+
+/// 导出课件（PPT）内嵌习题的答案。
+///
+/// 课件试题走 `cards/detlist` 链路，与作业 / 章节测验不同：
+/// `course_id` 即 classroom_id，`courseware_id` 即 PPT 标识。
+/// 落盘加 `ppt_` 前缀，与作业 / 测验文件名隔离（且不会被 `get_quiz_scores`
+/// 的 `quiz_` 扫描误纳入测验得分汇总）。
+#[tauri::command]
+pub async fn export_ppt_answers(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    course_id: String,
+    courseware_id: String,
+    ppt_title: String,
+) -> Result<String, AppError> {
+    let client = state.snapshot_client();
+
+    // 1. 拉取课件习题与答案（detlist）
+    let resp = client
+        .get_ppt_questions_answer(&course_id, &courseware_id)
+        .await?;
+
+    // 2. 保守校验：响应有效且含题目结果（不臆测全部子字段）
+    let has_problems = resp["data"]["problem_results"]
+        .as_array()
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    if resp["success"].as_bool() == Some(false) || !has_problems {
+        return Err(AppError::ApiError(
+            "未获取到课件习题，请确认该课件含随堂练习且该账号可查看".into(),
+        ));
+    }
+
+    // 3. 落盘到 answer 目录；加 ppt_ 前缀避免与作业 / 测验文件名冲突
+    let app_data_dir = app_data_dir(&app)?;
+    let dir = json_store::get_answer_dir(&app_data_dir)?;
+    let info = serde_json::json!({
+        "exam_id": courseware_id,
+        "exam_name": ppt_title,
+        "exam_type": "课件试题"
+    });
+    let filename = format!("ppt_{}", courseware_id);
     let path = json_store::save_json(&dir, &filename, &resp, &info)?;
     Ok(path)
 }
@@ -585,7 +630,12 @@ pub async fn export_exam_data(
             "exam_type": "考试答案"
         });
         let filename = format!("{}_answer", work_id);
-        Some(json_store::save_json(&exam_dir, &filename, &answer_data, &info)?)
+        Some(json_store::save_json(
+            &exam_dir,
+            &filename,
+            &answer_data,
+            &info,
+        )?)
     } else {
         None
     };
@@ -599,7 +649,12 @@ pub async fn export_exam_data(
             "exam_type": "考试题目"
         });
         let filename = format!("{}_question", work_id);
-        Some(json_store::save_json(&exam_dir, &filename, &question_data, &info)?)
+        Some(json_store::save_json(
+            &exam_dir,
+            &filename,
+            &question_data,
+            &info,
+        )?)
     } else {
         None
     };
@@ -681,21 +736,49 @@ pub async fn get_quiz_scores(app: AppHandle) -> Result<Value, AppError> {
     Ok(Value::Object(out))
 }
 
-// ========== 章节 Commands ==========
-
+/// 获取课程成绩明细（服务器权威「个人得分」），按 leaf_id 索引。
+///
+/// 链路：`get_course_sign` 取 `data.free_sku_id`（即 sku_id，零额外请求）→ c27 成绩接口
+/// `score_detail/single/{sku_id}/0/` → 解析 `data.leaf_level_infos[]`。
+/// 返回 `{ "leaf_id": {user_score, leaf_score} }`，与雨课堂后台成绩单一致
+/// （测验、作业等可计分 leaf 都会出现）。前端按 leaf_id 匹配展示「得分」。
 #[tauri::command]
-pub async fn get_course_chapters(
+pub async fn get_score_detail(
     state: State<'_, AppState>,
     course_id: String,
 ) -> Result<Value, AppError> {
     let client = state.snapshot_client();
+
+    // 1. 课堂信息里直接带 free_sku_id（与 course_sign 同一接口，无需额外请求即得 sku_id）
     let sign_resp = client.get_course_sign(&course_id).await?;
-    let course_sign = sign_resp["data"]["course_sign"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let chapters = client.get_all_chapter(&course_id, &course_sign).await?;
-    Ok(chapters)
+    let sku_id = json_str_or_num(&sign_resp["data"]["free_sku_id"]);
+    if sku_id.is_empty() {
+        return Err(AppError::ApiError(
+            "无法获取课程 sku_id，暂时无法读取成绩明细".into(),
+        ));
+    }
+
+    // 2. 拉取成绩明细
+    let detail = client.get_score_detail(&course_id, &sku_id).await?;
+
+    // 3. 解析 leaf_level_infos[] → { leaf_id: {user_score, leaf_score} }
+    let mut out = serde_json::Map::new();
+    if let Some(arr) = detail["data"]["leaf_level_infos"].as_array() {
+        for item in arr {
+            let leaf_id = json_str_or_num(&item["id"]);
+            if leaf_id.is_empty() {
+                continue;
+            }
+            out.insert(
+                leaf_id,
+                serde_json::json!({
+                    "user_score": json_f64(&item["user_score"]),
+                    "leaf_score": json_f64(&item["leaf_score"]),
+                }),
+            );
+        }
+    }
+    Ok(Value::Object(out))
 }
 
 // ========== 刷课 Commands ==========
@@ -706,13 +789,32 @@ pub async fn start_auto_study(
     state: State<'_, AppState>,
     course_id: String,
     task_ids: Option<Vec<i64>>,
+    auto_answer_quiz: Option<bool>,
+    playback_rate: Option<f64>,
+    concurrency: Option<usize>,
 ) -> Result<(), AppError> {
     if course_id.trim().is_empty() {
         return Err(AppError::InvalidInput("课程 ID 不能为空".into()));
     }
     let client = state.snapshot_client();
     let cancel = state.get_or_create_cancel(&course_id);
-    study::run_auto_study(app, client, course_id, cancel, task_ids).await
+    let app_data_dir = app_data_dir(&app)?;
+    // 倍率护栏：缺省 1.0，限制在 [1.0, 4.0]，避免异常值触发风控或停滞
+    let rate = playback_rate.unwrap_or(1.0).clamp(1.0, 4.0);
+    // 并行数护栏：缺省 1（串行），上限 10，防止过多并发心跳触发风控或耗尽资源
+    let concurrency = concurrency.unwrap_or(1).clamp(1, 10);
+    study::run_auto_study(
+        app,
+        client,
+        course_id,
+        cancel,
+        task_ids,
+        app_data_dir,
+        auto_answer_quiz.unwrap_or(false),
+        rate,
+        concurrency,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -790,9 +892,10 @@ pub async fn get_exam_files(app: AppHandle) -> Result<Vec<Value>, AppError> {
                 if name.ends_with(".json") {
                     let name = name.trim_end_matches(".json");
                     if let Some((base, suffix)) = name.rsplit_once('_') {
-                        let entry = files
-                            .entry(base.to_string())
-                            .or_insert((false, false, String::new()));
+                        let entry =
+                            files
+                                .entry(base.to_string())
+                                .or_insert((false, false, String::new()));
                         match suffix {
                             "question" => entry.0 = true,
                             "answer" => {
@@ -840,24 +943,12 @@ pub struct QuizAnswerEvent {
     pub index: usize,
     pub total: usize,
     pub problem_id: String,
-    /// running | done | failed | skipped
+    /// preparing | running | done | failed | skipped
     pub status: String,
     /// "local"（题库）| "ai" | None
     pub source: Option<String>,
     pub is_correct: Option<bool>,
     pub message: Option<String>,
-}
-
-/// 自动答题汇总结果（命令返回 + emit: "quiz-answer-complete"）。
-#[derive(Clone, Serialize)]
-pub struct QuizAnswerResult {
-    pub total: usize,
-    pub submitted: usize,
-    pub correct: usize,
-    pub from_local: usize,
-    pub from_ai: usize,
-    pub failed: usize,
-    pub skipped: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -881,40 +972,6 @@ fn emit_quiz_progress(
         message,
     };
     let _ = app.emit("quiz-answer-progress", evt);
-}
-
-/// 从 problem_apply 响应解析是否答对；字段路径待联调，解析不出返回 None。
-///
-/// 同平台读取接口用 `is_right` 标记正误，提交响应大概率同名，故多路径容错：
-/// `data.is_correct` / `data.is_right` / `data.correct` 及对应顶层字段。
-fn parse_is_correct(resp: &Value) -> Option<bool> {
-    const PATHS: &[&[&str]] = &[
-        &["data", "is_correct"],
-        &["data", "is_right"],
-        &["data", "correct"],
-        &["is_correct"],
-        &["is_right"],
-        &["correct"],
-    ];
-    for path in PATHS {
-        let mut cur = resp;
-        let mut ok = true;
-        for seg in *path {
-            match cur.get(*seg) {
-                Some(n) => cur = n,
-                None => {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        if ok {
-            if let Some(b) = cur.as_bool() {
-                return Some(b);
-            }
-        }
-    }
-    None
 }
 
 /// 保存 AI 配置；若传入 api_key 为空且已有旧配置，则沿用旧 key（前端不回传明文）。
@@ -953,11 +1010,11 @@ pub async fn stop_quiz_auto_answer(
     Ok(())
 }
 
-/// 章节测验自动答题：拉题 → 题库优先 / AI 兜底 →（非 dry_run 则）逐题提交。
+/// 章节测验自动答题：薄封装，核心逻辑见 [`quiz_runner::run_quiz_answer`]。
 ///
-/// 全程串行（复用 AppState 单 client + 同一 cookie jar），逐题 emit 进度，
-/// 限速 ≥1 题/秒；单题失败 / 跳过隔离，不中断整体；支持取消。
-/// `dry_run=true` 时只生成并展示答案、**不提交**（联调护栏）。
+/// 逐题/准备进度映射为 `quiz-answer-progress` 事件，结束 emit `quiz-answer-complete`；
+/// 被取消时补发 `quiz-answer-stopped`。取消令牌以 `quiz:{leaf_id}` 维度，
+/// 避免与刷课的 `course_id` 键冲突。`dry_run=true` 只生成并展示答案、**不提交**。
 #[tauri::command]
 pub async fn start_quiz_auto_answer(
     app: AppHandle,
@@ -973,172 +1030,37 @@ pub async fn start_quiz_auto_answer(
     let cancel = state.get_or_create_cancel(&format!("quiz:{}", leaf_id));
     cancel.store(false, Ordering::Relaxed);
 
-    // 1. 课程签名 + 叶子信息（复用 export_quiz_answers 前半段链路）
-    let sign_resp = client.get_course_sign(&course_id).await?;
-    let course_sign = sign_resp["data"]["course_sign"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let leaf_info = client
-        .get_leaf_info(&leaf_id, &course_id, &course_sign)
-        .await?;
-    let leaf_type_id = json_str_or_num(&leaf_info["data"]["content_info"]["leaf_type_id"]);
-    let sku_id = json_str_or_num(&leaf_info["data"]["sku_id"]);
-    if leaf_type_id.is_empty() || sku_id.is_empty() {
-        return Err(AppError::ApiError(
-            "无法获取该测验信息（缺少 leaf_type_id 或 sku_id），请确认该项为测验/练习".into(),
-        ));
-    }
-
-    // 2. 拉取现场题目列表
-    let exercise = client
-        .get_exercise_list(&course_id, &leaf_type_id, &sku_id)
-        .await?;
-    if exercise["success"].as_bool() == Some(false)
-        || exercise.get("data").map_or(true, |d| d.is_null())
-    {
-        return Err(AppError::ApiError(
-            "未获取到练习题，请确认该账号可查看该测验".into(),
-        ));
-    }
-    let problems: Vec<Value> = encode::find_problems(&exercise)
-        .map(|v| v.into_iter().cloned().collect())
-        .unwrap_or_default();
-
-    // 3. 加载本地题库（可不存在）
-    let answer_dir = json_store::get_answer_dir(&app_data_dir)?;
-    let local_bank: Option<Value> =
-        json_store::load_json(&answer_dir, &format!("quiz_{}", leaf_id)).ok();
-
-    // 4. AI 配置（仅启用且齐全时构造 client）
-    let ai_client = ai_config::load_ai_config(&app_data_dir)
-        .ok()
-        .flatten()
-        .filter(|c| c.is_usable())
-        .map(AiClient::new);
-
-    let total = problems.len();
-    let mut result = QuizAnswerResult {
-        total,
-        submitted: 0,
-        correct: 0,
-        from_local: 0,
-        from_ai: 0,
-        failed: 0,
-        skipped: 0,
+    // 把核心进度回调映射为 quiz-answer-progress 事件（preparing 阶段也照发）。
+    let app_for_progress = app.clone();
+    let mut on_progress = move |p: quiz_runner::QuizProgress| {
+        emit_quiz_progress(
+            &app_for_progress,
+            p.index,
+            p.total,
+            &p.problem_id,
+            p.status,
+            p.source,
+            p.is_correct,
+            p.message,
+        );
     };
 
-    for (i, p) in problems.iter().enumerate() {
-        // 限速 + 取消检查（除第一题外，每题前 sleep 1100ms ≈ ≤1 题/秒）
-        if i > 0 {
-            if cancel.load(Ordering::Relaxed) {
-                let _ = app.emit("quiz-answer-stopped", serde_json::json!({"message":"已停止"}));
-                break;
-            }
-            sleep(Duration::from_millis(1100)).await;
-        }
-        if cancel.load(Ordering::Relaxed) {
-            let _ = app.emit("quiz-answer-stopped", serde_json::json!({"message":"已停止"}));
-            break;
-        }
+    let result = quiz_runner::run_quiz_answer(
+        &client,
+        &app_data_dir,
+        &course_id,
+        &leaf_id,
+        dry_run,
+        &cancel,
+        &mut on_progress,
+    )
+    .await;
 
-        let idx = i + 1;
-        let problem_id = match encode::extract_problem_id(p) {
-            Some(id) => id,
-            None => {
-                result.skipped += 1;
-                emit_quiz_progress(&app, idx, total, "", "skipped", None, None, Some("无法识别题目 ID".into()));
-                continue;
-            }
-        };
-        emit_quiz_progress(&app, idx, total, &problem_id, "running", None, None, None);
-
-        // 答案来源：题库优先
-        let mut answer: Option<Value> = None;
-        let mut source: Option<&str> = None;
-        if let Some(bank) = &local_bank {
-            if let Some(a) = encode::lookup_local(&problem_id, bank) {
-                answer = Some(a);
-                source = Some("local");
-            }
-        }
-        // AI 兜底
-        if answer.is_none() {
-            if let Some(ai) = &ai_client {
-                match ProblemType::from_question(p) {
-                    Some(qtype) => {
-                        let body = encode::extract_body(p);
-                        let options = encode::extract_options(p);
-                        match ai.solve_objective(&body, &options, qtype).await {
-                            Ok(raw) => match encode::encode_ai_answer(&raw, qtype) {
-                                Ok(enc) => {
-                                    answer = Some(enc);
-                                    source = Some("ai");
-                                }
-                                Err(e) => {
-                                    result.skipped += 1;
-                                    emit_quiz_progress(&app, idx, total, &problem_id, "skipped", Some("ai"), None, Some(format!("AI 答案解析失败: {}", e)));
-                                    continue;
-                                }
-                            },
-                            Err(e) => {
-                                result.failed += 1;
-                                emit_quiz_progress(&app, idx, total, &problem_id, "failed", Some("ai"), None, Some(format!("AI 调用失败: {}", e)));
-                                continue;
-                            }
-                        }
-                    }
-                    None => {
-                        result.skipped += 1;
-                        emit_quiz_progress(&app, idx, total, &problem_id, "skipped", None, None, Some("无法识别题型".into()));
-                        continue;
-                    }
-                }
-            }
-        }
-
-        let answer = match answer {
-            Some(a) => a,
-            None => {
-                result.skipped += 1;
-                let reason = if ai_client.is_some() {
-                    "题库未命中且 AI 未能作答"
-                } else {
-                    "题库未命中且未启用 AI"
-                };
-                emit_quiz_progress(&app, idx, total, &problem_id, "skipped", None, None, Some(reason.into()));
-                continue;
-            }
-        };
-
-        // dry_run：只展示将提交的内容，不真正提交
-        if dry_run {
-            emit_quiz_progress(&app, idx, total, &problem_id, "done", source, None, Some(format!("[试跑] 将提交: {}", answer)));
-            continue;
-        }
-
-        // 提交
-        match client.post_exercise_answer(&course_id, &problem_id, &answer).await {
-            Ok(resp) => {
-                result.submitted += 1;
-                match source {
-                    Some("local") => result.from_local += 1,
-                    Some("ai") => result.from_ai += 1,
-                    _ => {}
-                }
-                let is_correct = parse_is_correct(&resp);
-                if is_correct == Some(true) {
-                    result.correct += 1;
-                }
-                emit_quiz_progress(&app, idx, total, &problem_id, "done", source, is_correct, None);
-            }
-            Err(e) => {
-                result.failed += 1;
-                emit_quiz_progress(&app, idx, total, &problem_id, "failed", source, None, Some(format!("提交失败: {}", e)));
-            }
-        }
+    // 核心循环被取消时静默 break，这里补发 stopped 事件（与原行为一致）。
+    if cancel.load(Ordering::Relaxed) {
+        let _ = app.emit("quiz-answer-stopped", serde_json::json!({"message":"已停止"}));
     }
-
+    let result = result?;
     let _ = app.emit("quiz-answer-complete", result.clone());
     Ok(result)
 }
@@ -1176,4 +1098,3 @@ mod tests {
         assert_eq!(extract_name_from_userinfo(&resp), None);
     }
 }
-

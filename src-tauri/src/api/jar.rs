@@ -153,11 +153,7 @@ impl DomainAwareJar {
 }
 
 impl CookieStore for DomainAwareJar {
-    fn set_cookies(
-        &self,
-        cookie_headers: &mut dyn Iterator<Item = &HeaderValue>,
-        url: &url::Url,
-    ) {
+    fn set_cookies(&self, cookie_headers: &mut dyn Iterator<Item = &HeaderValue>, url: &url::Url) {
         // 维护影子集合用于 dump_all 的 host-only 反查
         if let Some(host) = url.host_str() {
             self.hosts_seen.write().insert(host.to_string());
@@ -304,9 +300,7 @@ mod tests {
         // H2 修复验证：服务端 Set-Cookie 不带 Domain 属性时，依然能 dump 出来
         let jar = DomainAwareJar::default();
         let url: url::Url = "https://www.yuketang.cn/".parse().unwrap();
-        let headers = vec![
-            HeaderValue::from_static("hostonly_ses=ho_val; Path=/"),
-        ];
+        let headers = vec![HeaderValue::from_static("hostonly_ses=ho_val; Path=/")];
         let mut iter = headers.iter();
         CookieStore::set_cookies(&jar, &mut iter, &url);
 
@@ -374,7 +368,10 @@ mod tests {
         // 子域 → host-only
         assert_eq!(derive_domain_attr_for_load("www.yuketang.cn"), None);
         assert_eq!(derive_domain_attr_for_load("changjie.yuketang.cn"), None);
-        assert_eq!(derive_domain_attr_for_load("examination.xuetangx.com"), None);
+        assert_eq!(
+            derive_domain_attr_for_load("examination.xuetangx.com"),
+            None
+        );
         // IP / localhost → host-only
         assert_eq!(derive_domain_attr_for_load("localhost"), None);
         assert_eq!(derive_domain_attr_for_load("127.0.0.1"), None);

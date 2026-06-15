@@ -33,9 +33,9 @@ pub fn run() {
             commands::get_course_ppts,
             commands::export_work_answers,
             commands::export_quiz_answers,
+            commands::export_ppt_answers,
             commands::export_exam_data,
             commands::get_answer_files,
-            commands::get_course_chapters,
             commands::start_auto_study,
             commands::stop_auto_study,
             commands::get_chapter_tasks,
@@ -47,6 +47,7 @@ pub fn run() {
             commands::stop_quiz_auto_answer,
             commands::get_learn_schedule,
             commands::get_quiz_scores,
+            commands::get_score_detail,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Tauri 应用失败");
