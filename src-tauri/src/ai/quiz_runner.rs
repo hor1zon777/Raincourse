@@ -178,6 +178,55 @@ fn parse_is_correct(resp: &Value) -> Option<bool> {
     None
 }
 
+/// 提交响应是否被服务端业务层拒绝（`success` 显式为 `false`）。
+///
+/// 沿用全局惯例（拉题 `exercise["success"] == Some(false)`、commands 各处同写法）：
+/// 只认**显式** `success == false`；成功响应可能不带该字段或为 `true`，均不算拒绝。
+/// 这是「自动答题漏掉提交」的关键防线——此前提交只要 HTTP 成功就计入已提交，
+/// 服务端因风控限流 / CSRF 失效 / 答案格式不符返回的 `success:false` 被静默当成功，
+/// 答案实际未入库，用户却看到「已提交」，表现为「有时候漏掉提交」。
+fn is_submit_rejected(resp: &Value) -> bool {
+    resp["success"].as_bool() == Some(false)
+}
+
+/// 从被拒绝的提交响应里容错提取可读错误信息（供进度展示与日志）。
+fn submit_error_detail(resp: &Value) -> String {
+    const MSG_KEYS: &[&str] = &["detail", "errmsg", "msg", "message", "error"];
+    let text = MSG_KEYS.iter().find_map(|k| {
+        resp.get(*k)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    });
+    let code = resp.get("errcode").filter(|c| !c.is_null());
+    match (text, code) {
+        (Some(t), Some(c)) => format!("服务端拒绝（{}，errcode={}）", t, c),
+        (Some(t), None) => format!("服务端拒绝（{}）", t),
+        (None, Some(c)) => format!("服务端拒绝（errcode={}）", c),
+        (None, None) => format!(
+            "服务端拒绝（success=false）：{}",
+            truncate_progress_text(&resp.to_string())
+        ),
+    }
+}
+
+/// 提交单题答案，把「服务端业务层拒绝（success=false）」与网络错误**统一**成 `Err`，
+/// 供上层做有限重试 / 计失败。成功时返回响应体（用于解析是否答对）。
+async fn submit_answer(
+    client: &RainClient,
+    course_id: &str,
+    problem_id: &str,
+    answer: &Value,
+) -> Result<Value, AppError> {
+    let resp = client
+        .post_exercise_answer(course_id, problem_id, answer)
+        .await?;
+    if is_submit_rejected(&resp) {
+        return Err(AppError::ApiError(submit_error_detail(&resp)));
+    }
+    Ok(resp)
+}
+
 /// 章节测验自动答题核心：拉题 → 已答跳过 → 题库优先 / AI 兜底 →（非 dry_run 则）逐题提交。
 ///
 /// 全程串行，逐题回调进度；限速 ≥1 题/秒；单题失败/跳过隔离，不中断整体；
@@ -517,11 +566,41 @@ pub async fn run_quiz_answer(
             continue;
         }
 
-        // 提交
-        match client
-            .post_exercise_answer(course_id, &problem_id, &answer)
-            .await
-        {
+        // 提交（含有限重试）：偶发限流 / 网络抖动 / CSRF 抖动下单次提交可能被拒
+        //（success=false）或网络失败，是「漏掉提交」的偶发来源。提交为幂等覆盖（同题再交
+        // 只更新答案、不重复计分，且循环开头已用 is_answered 跳过跨次已答题），故失败后
+        // 退避重试可救回大部分偶发漏提交；重试尊重 cancel，取消后不再重试。
+        const SUBMIT_MAX_ATTEMPTS: u32 = 2;
+        let mut attempt = 0u32;
+        let submit_result = loop {
+            attempt += 1;
+            match submit_answer(client, course_id, &problem_id, &answer).await {
+                Ok(resp) => break Ok(resp),
+                Err(e) => {
+                    if attempt >= SUBMIT_MAX_ATTEMPTS || cancel.load(Ordering::Relaxed) {
+                        break Err(e);
+                    }
+                    step(
+                        on_progress,
+                        idx,
+                        total,
+                        &problem_id,
+                        "running",
+                        source,
+                        None,
+                        Some(format!(
+                            "提交未成功（{}），正在重试（第 {}/{} 次）…",
+                            e,
+                            attempt + 1,
+                            SUBMIT_MAX_ATTEMPTS
+                        )),
+                    );
+                    sleep(Duration::from_millis(1200)).await;
+                }
+            }
+        };
+
+        match submit_result {
             Ok(resp) => {
                 result.submitted += 1;
                 count_answer_source(&mut result, source);
@@ -565,4 +644,44 @@ pub async fn run_quiz_answer(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn is_submit_rejected_only_on_explicit_false() {
+        // 成功：success=true 或缺字段都不算拒绝（避免把正常提交误判为失败）
+        assert!(!is_submit_rejected(&json!({"success": true})));
+        assert!(!is_submit_rejected(&json!({"data": {"is_correct": true}})));
+        assert!(!is_submit_rejected(&json!({})));
+        // 拒绝：success 显式 false（风控限流 / CSRF 失效 / 格式不符）
+        assert!(is_submit_rejected(
+            &json!({"success": false, "detail": "操作过于频繁"})
+        ));
+    }
+
+    #[test]
+    fn submit_error_detail_extracts_message_and_code() {
+        // 文案 + errcode 同时存在
+        assert_eq!(
+            submit_error_detail(&json!({"success": false, "detail": "操作频繁", "errcode": 4031})),
+            "服务端拒绝（操作频繁，errcode=4031）"
+        );
+        // 仅文案（errmsg 兜底字段）
+        assert_eq!(
+            submit_error_detail(&json!({"success": false, "errmsg": "csrf 失效"})),
+            "服务端拒绝（csrf 失效）"
+        );
+        // 仅 errcode
+        assert_eq!(
+            submit_error_detail(&json!({"success": false, "errcode": 500})),
+            "服务端拒绝（errcode=500）"
+        );
+        // 无任何信息字段：兜底带原始响应片段
+        let s = submit_error_detail(&json!({"success": false}));
+        assert!(s.starts_with("服务端拒绝（success=false）："));
+    }
 }
