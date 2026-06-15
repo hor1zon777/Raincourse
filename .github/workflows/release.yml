@@ -1,18 +1,15 @@
 name: Build & Release
 
 # 触发：
-#   - 推送 v* 标签   → 构建并发布到 GitHub Release（草稿）
-#   - 推送 main / PR → CI 构建验证，产物作为 artifact 保留 14 天
-#   - 手动           → 通过 workflow_dispatch 触发
+#   - 推送 v* 标签        → 构建并发布到 GitHub Release（草稿）
+#   - 手动 workflow_dispatch → 仅 CI 构建，产物作为 artifact 保留 14 天（按需验证用）
+# 说明：main / PR 推送不触发构建，只有打 v* 标签才会构建并发 Release。
 on:
   push:
-    branches: [main]
     tags: ['v*']
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
-# 同一分支/PR 上新一次推送会取消上一次未完成的运行，避免堆积
+# 同一 ref（标签/手动）上新一次运行会取消上一次未完成的运行，避免堆积
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -49,7 +46,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          # 不同事件类型分桶，避免 PR 与 main 互相污染
+          # 按事件类型分桶（tag push / 手动），缓存互不污染
           shared-key: tauri-windows-${{ github.event_name }}
 
       - name: 安装前端依赖
@@ -79,7 +76,8 @@ jobs:
           releaseDraft: true
           prerelease: false
 
-      # ──────────────────── 非 tag：仅 CI 构建并上传 artifact ────────────────────
+      # ──────────────────── 手动触发：仅 CI 构建并上传 artifact ────────────────────
+      # 仅 workflow_dispatch 会走到这里（main / PR 已不触发本工作流）；用于不打 tag 时按需验证构建。
       - name: 构建（CI 验证）
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: pnpm tauri build
