@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/niceholman/schemas/main/tauri/tauri.conf.json",
   "productName": "雨课堂助手",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "identifier": "com.raincourse.helper",
   "build": {
     "beforeDevCommand": "pnpm dev",

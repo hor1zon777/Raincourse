@@ -707,6 +707,29 @@ pub async fn delete_answer_files(
     Ok(serde_json::json!({ "deleted": deleted, "failed": failed }))
 }
 
+/// 把选中的答案文件打包成单个分享包，写入用户经对话框选定的 `dest_path`。
+/// 返回实际打入的条目数（缺失/损坏文件会被跳过）。
+#[tauri::command]
+pub async fn export_answer_bundle(
+    app: AppHandle,
+    file_names: Vec<String>,
+    dest_path: String,
+) -> Result<usize, AppError> {
+    if file_names.is_empty() {
+        return Err(AppError::InvalidInput("未选择任何答案文件".into()));
+    }
+    let app_data_dir = app_data_dir(&app)?;
+    json_store::export_answer_bundle(&app_data_dir, &file_names, std::path::Path::new(&dest_path))
+}
+
+/// 从用户经对话框选定的 `src_path` 分享包导入答案文件到本地 answer 目录。
+/// 已存在同名文件跳过，返回 `{ imported, skipped, failed }`。
+#[tauri::command]
+pub async fn import_answer_bundle(app: AppHandle, src_path: String) -> Result<Value, AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    json_store::import_answer_bundle(&app_data_dir, std::path::Path::new(&src_path))
+}
+
 /// 获取课程学习进度：每个 leaf 的完成度 + 整体完成度。
 ///
 /// 返回 `{ leaf_schedules: {leaf_id: 0|1|浮点}, total_schedule: 0~1 }`。

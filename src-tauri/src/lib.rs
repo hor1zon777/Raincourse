@@ -19,6 +19,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::init_client,
@@ -38,6 +39,8 @@ pub fn run() {
             commands::get_answer_files,
             commands::delete_answer_file,
             commands::delete_answer_files,
+            commands::export_answer_bundle,
+            commands::import_answer_bundle,
             commands::start_auto_study,
             commands::stop_auto_study,
             commands::get_chapter_tasks,
