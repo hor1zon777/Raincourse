@@ -11,6 +11,7 @@ const Dashboard = lazy(() => import('./routes/Dashboard'));
 const CourseDetail = lazy(() => import('./routes/CourseDetail'));
 const StudyProgress = lazy(() => import('./routes/StudyProgress'));
 const AnswerFiles = lazy(() => import('./routes/AnswerFiles'));
+const AnswerPreview = lazy(() => import('./routes/AnswerPreview'));
 const ExamExport = lazy(() => import('./routes/ExamExport'));
 const Settings = lazy(() => import('./routes/Settings'));
 const About = lazy(() => import('./routes/About'));
@@ -68,6 +69,7 @@ export default function App() {
                 <Route path="/course/:id" element={<CourseDetail />} />
                 <Route path="/study/:id" element={<StudyProgress />} />
                 <Route path="/answers" element={<AnswerFiles />} />
+                <Route path="/answers/preview/:fileName" element={<AnswerPreview />} />
                 <Route path="/export" element={<ExamExport />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/about" element={<About />} />

@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Table, Card, Typography, Button, Spin, Tag, message, Empty } from 'antd';
-import { ReloadOutlined, FileExcelOutlined, ExportOutlined } from '@ant-design/icons';
+import { Table, Card, Typography, Button, Spin, Tag, message, Empty, Popconfirm, Space } from 'antd';
+import {
+  DeleteOutlined,
+  ReloadOutlined,
+  FileExcelOutlined,
+  ExportOutlined,
+} from '@ant-design/icons';
 import { invoke } from '@tauri-apps/api/core';
 import { normalizeError } from '../utils/errors';
 import PageHeader from '../components/PageHeader';
@@ -13,16 +18,28 @@ interface ExamFileInfo {
   can_export: boolean;
 }
 
+interface DeleteBatchResult {
+  deleted: number;
+  failed: { exam_id: string; reason: string }[];
+}
+
 export default function ExamExport() {
   const [files, setFiles] = useState<ExamFileInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState<string | null>(null);
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const [deletingOne, setDeletingOne] = useState<string | null>(null);
 
   const fetchFiles = async () => {
     setLoading(true);
     try {
       const data = await invoke<ExamFileInfo[]>('get_exam_files');
       setFiles(data);
+      setSelectedKeys((prev) => {
+        const existing = new Set(data.map((f) => f.exam_id));
+        return prev.filter((k) => existing.has(k));
+      });
     } catch (e) {
       const err = normalizeError(e);
       if (err.code === 'IO_ERROR') {
@@ -52,6 +69,40 @@ export default function ExamExport() {
       message.error(`导出失败: ${normalizeError(e).message}`);
     } finally {
       setExporting(null);
+    }
+  };
+
+  const handleDeleteOne = async (file: ExamFileInfo) => {
+    setDeletingOne(file.exam_id);
+    try {
+      await invoke('delete_exam_file', { examId: file.exam_id });
+      message.success(`已删除：${file.exam_name || file.exam_id}`);
+      await fetchFiles();
+    } catch (e) {
+      message.error(`删除失败: ${normalizeError(e).message}`);
+    } finally {
+      setDeletingOne(null);
+    }
+  };
+
+  const handleDeleteBatch = async () => {
+    if (selectedKeys.length === 0) return;
+    setBatchDeleting(true);
+    try {
+      const res = await invoke<DeleteBatchResult>('delete_exam_files', {
+        examIds: selectedKeys,
+      });
+      if (res.failed.length === 0) {
+        message.success(`已删除 ${selectedKeys.length} 组考试数据文件`);
+      } else {
+        message.warning(`删除完成：成功删除 ${res.deleted} 个文件，失败 ${res.failed.length} 组`);
+      }
+      setSelectedKeys([]);
+      await fetchFiles();
+    } catch (e) {
+      message.error(`批量删除失败: ${normalizeError(e).message}`);
+    } finally {
+      setBatchDeleting(false);
     }
   };
 
@@ -95,18 +146,38 @@ export default function ExamExport() {
     {
       title: '操作',
       key: 'action',
-      width: 140,
+      width: 230,
       render: (_: unknown, record: ExamFileInfo) => (
-        <Button
-          type="primary"
-          size="small"
-          icon={<FileExcelOutlined />}
-          disabled={!record.can_export}
-          loading={exporting === record.exam_id}
-          onClick={() => handleExportExcel(record)}
-        >
-          导出 Excel
-        </Button>
+        <Space size={0}>
+          <Button
+            type="primary"
+            size="small"
+            icon={<FileExcelOutlined />}
+            disabled={!record.can_export}
+            loading={exporting === record.exam_id}
+            onClick={() => handleExportExcel(record)}
+          >
+            导出 Excel
+          </Button>
+          <Popconfirm
+            title="确定删除该组考试数据文件？"
+            description="会删除本地题目文件和答案文件，不影响雨课堂平台数据。"
+            onConfirm={() => handleDeleteOne(record)}
+            okText="确定删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+          >
+            <Button
+              type="link"
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              loading={deletingOne === record.exam_id}
+            >
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
@@ -117,9 +188,29 @@ export default function ExamExport() {
         icon={<ExportOutlined />}
         title="数据导出"
         extra={
-          <Button icon={<ReloadOutlined />} onClick={fetchFiles} loading={loading}>
-            刷新
-          </Button>
+          <Space>
+            <Popconfirm
+              title={`确定删除选中的 ${selectedKeys.length} 组考试数据文件？`}
+              description="会删除本地题目文件和答案文件，不影响雨课堂平台数据。"
+              onConfirm={handleDeleteBatch}
+              okText="确定删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              disabled={selectedKeys.length === 0}
+            >
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                disabled={selectedKeys.length === 0}
+                loading={batchDeleting}
+              >
+                批量删除{selectedKeys.length > 0 ? ` (${selectedKeys.length})` : ''}
+              </Button>
+            </Popconfirm>
+            <Button icon={<ReloadOutlined />} onClick={fetchFiles} loading={loading}>
+              刷新
+            </Button>
+          </Space>
         }
       />
 
@@ -133,6 +224,10 @@ export default function ExamExport() {
                 只有同时拥有题目文件和答案文件的考试才能导出为 Excel。
               </Typography.Paragraph>
               <Table
+                rowSelection={{
+                  selectedRowKeys: selectedKeys,
+                  onChange: (keys) => setSelectedKeys(keys as string[]),
+                }}
                 columns={columns}
                 dataSource={files}
                 rowKey="exam_id"

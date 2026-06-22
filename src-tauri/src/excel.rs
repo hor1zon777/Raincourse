@@ -35,8 +35,42 @@ fn strip_html(input: &str) -> String {
 fn find_answer_by_id<'a>(problem_id: &str, results: &'a [Value]) -> Option<&'a Value> {
     results
         .iter()
-        .find(|r| r["problem_id"].as_str() == Some(problem_id))
+        .find(|r| value_to_string(&r["problem_id"]).as_deref() == Some(problem_id))
         .map(|r| &r["answer"])
+}
+
+fn value_to_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) if !s.is_empty() => Some(s.to_string()),
+        n if n.is_number() => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn unwrapped_export_root(data: &Value) -> &Value {
+    data.get("answer").unwrap_or(data)
+}
+
+fn find_array_at_paths<'a>(root: &'a Value, paths: &[&[&str]]) -> Option<&'a Vec<Value>> {
+    for path in paths {
+        let mut current = root;
+        let mut found = true;
+        for segment in *path {
+            match current.get(*segment) {
+                Some(next) => current = next,
+                None => {
+                    found = false;
+                    break;
+                }
+            }
+        }
+        if found {
+            if let Some(arr) = current.as_array() {
+                return Some(arr);
+            }
+        }
+    }
+    None
 }
 
 /// 处理考试数据并生成 Excel
@@ -53,15 +87,29 @@ pub fn export_exam_excel(
     let question_data =
         json_store::load_json(&exam_dir, &format!("{}_question.json", exam_id_clean))?;
     let answer_data = json_store::load_json(&exam_dir, &format!("{}_answer.json", exam_id_clean))?;
+    let question_root = unwrapped_export_root(&question_data);
+    let answer_root = unwrapped_export_root(&answer_data);
 
-    let problems = question_data["exam"]["data"]["problems"]
-        .as_array()
-        .ok_or_else(|| AppError::General("题目数据格式错误".into()))?;
+    let problems = find_array_at_paths(
+        question_root,
+        &[
+            &["exam", "data", "problems"],
+            &["data", "problems"],
+            &["problems"],
+        ],
+    )
+    .ok_or_else(|| AppError::General("题目数据格式错误".into()))?;
 
-    let problem_results = answer_data["exam"]["data"]["problem_results"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let problem_results = find_array_at_paths(
+        answer_root,
+        &[
+            &["exam", "data", "problem_results"],
+            &["data", "problem_results"],
+            &["problem_results"],
+        ],
+    )
+    .cloned()
+    .unwrap_or_default();
 
     // 创建工作簿
     let mut workbook = Workbook::new();
@@ -106,7 +154,9 @@ pub fn export_exam_excel(
     for (row_idx, question) in problems.iter().enumerate() {
         let row = (row_idx + 1) as u32;
         let type_text = question["TypeText"].as_str().unwrap_or("未知");
-        let problem_id = question["problem_id"].as_str().unwrap_or("");
+        let problem_id = value_to_string(&question["problem_id"])
+            .or_else(|| value_to_string(&question["ProblemID"]))
+            .unwrap_or_default();
 
         // 题型编号
         let type_code = match type_text {
@@ -132,7 +182,7 @@ pub fn export_exam_excel(
             .unwrap_or_default();
 
         // 查找答案
-        let raw_answer = find_answer_by_id(problem_id, &problem_results);
+        let raw_answer = find_answer_by_id(&problem_id, &problem_results);
         let answer_display = format_answer(type_text, raw_answer, options);
 
         // 写入行

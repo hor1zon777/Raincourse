@@ -246,6 +246,19 @@ pub fn encrypted_font_unknown_chars_with_decoder(
     out
 }
 
+/// 解码一段题目/选项 HTML 文本为纯文本。
+pub fn decode_html_text_with_decoder(s: &str, decoder: Option<&FontDecodeMap>) -> String {
+    strip_html_with_decoder(s, decoder)
+}
+
+/// 检测一段题目/选项 HTML 文本中，当前解码器无法覆盖的加密字体字符。
+pub fn encrypted_html_unknown_chars_with_decoder(
+    s: &str,
+    decoder: Option<&FontDecodeMap>,
+) -> Vec<char> {
+    collect_unknown_encrypted_chars(s, decoder)
+}
+
 fn raw_html_fields(q: &Value) -> Vec<String> {
     let mut fields = Vec::new();
     let c = content_node(q);

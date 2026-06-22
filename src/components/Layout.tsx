@@ -38,14 +38,23 @@ export default function AppLayout() {
   // 而非每次都丢失位置、回到「我的课程」列表（课程详情的 UI 选择由 store 按 courseId 持久化，
   // 配合此处的位置记忆即可完整恢复现场）。
   const lastCoursePathRef = useRef('/');
+  // 同样记住「答案文件」区段最近访问的子路径，避免从答案预览页切走后再切回时丢失预览位置。
+  const lastAnswerPathRef = useRef('/answers');
   useEffect(() => {
     if (location.pathname === '/' || location.pathname.startsWith('/course/')) {
       lastCoursePathRef.current = location.pathname;
     }
+    if (location.pathname === '/answers' || location.pathname.startsWith('/answers/')) {
+      lastAnswerPathRef.current = location.pathname;
+    }
   }, [location.pathname]);
 
   // 课程详情（/course/:id）属于「课程列表」区段，菜单高亮归到 `/`，避免详情页时无任何高亮
-  const selectedKey = location.pathname.startsWith('/course/') ? '/' : location.pathname;
+  const selectedKey = location.pathname.startsWith('/course/')
+    ? '/'
+    : location.pathname.startsWith('/answers/')
+      ? '/answers'
+      : location.pathname;
 
   const handleMenuClick = (key: string) => {
     if (key === '/') {
@@ -53,6 +62,13 @@ export default function AppLayout() {
       const inCourses =
         location.pathname === '/' || location.pathname.startsWith('/course/');
       navigate(inCourses ? '/' : lastCoursePathRef.current);
+      return;
+    }
+    if (key === '/answers') {
+      // 已在答案区段内：回到文件列表；在区段外：回到最近浏览的答案页（列表或预览）。
+      const inAnswers =
+        location.pathname === '/answers' || location.pathname.startsWith('/answers/');
+      navigate(inAnswers ? '/answers' : lastAnswerPathRef.current);
       return;
     }
     navigate(key);

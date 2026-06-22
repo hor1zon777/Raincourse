@@ -44,6 +44,8 @@ pub fn run() {
             commands::get_chapter_tasks,
             commands::export_excel,
             commands::get_exam_files,
+            commands::delete_exam_file,
+            commands::delete_exam_files,
             commands::save_ai_config,
             commands::get_ai_config,
             commands::start_quiz_auto_answer,

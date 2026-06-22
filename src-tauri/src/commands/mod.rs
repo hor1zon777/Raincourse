@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -14,14 +14,14 @@ use crate::models::exam::{ExportResult, Ppt, Work, WorkStatus};
 use crate::session::manager as sess;
 use crate::storage::json_store;
 use crate::study::{self, ChapterTask};
-use crate::util::json_str_or_num;
+use crate::util::{json_str_or_num, sanitize};
 use crate::{excel, ws};
 
 use serde::Serialize;
 
 use crate::ai::config::{self as ai_config, AiConfig};
-use crate::ai::encode;
 use crate::ai::quiz_runner::{self, QuizAnswerResult};
+use crate::ai::{encode, font_decode};
 
 /// 全局应用状态。
 ///
@@ -454,6 +454,7 @@ pub async fn export_work_answers(
     // 4. 获取答案
     let answers = client.get_all_answer(&work_id).await?;
     if let Some(answer_data) = answers {
+        let answer_data = decode_export_payload_before_save(answer_data).await?;
         let app_data_dir = app_data_dir(&app)?;
         let dir = json_store::get_answer_dir(&app_data_dir)?;
         let info = serde_json::json!({
@@ -469,6 +470,109 @@ pub async fn export_work_answers(
             "获取答案失败，请检查是否可以查看试卷".into(),
         ))
     }
+}
+
+const ENCRYPTED_FONT_CLASS: &str = "xuetangx-com-encrypted-font";
+
+fn contains_encrypted_font_markup(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s.to_ascii_lowercase().contains(ENCRYPTED_FONT_CLASS),
+        Value::Array(arr) => arr.iter().any(contains_encrypted_font_markup),
+        Value::Object(obj) => obj.values().any(contains_encrypted_font_markup),
+        _ => false,
+    }
+}
+
+fn normalize_font_url(raw: &str) -> Option<String> {
+    let url = raw.trim();
+    if url.is_empty() {
+        None
+    } else if url.starts_with("//") {
+        Some(format!("https:{}", url))
+    } else {
+        Some(url.to_string())
+    }
+}
+
+fn find_font_url(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(obj) => {
+            for key in ["font", "font_url", "fontUrl", "font_path", "fontPath"] {
+                if let Some(url) = obj
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .and_then(normalize_font_url)
+                {
+                    return Some(url);
+                }
+            }
+            obj.values().find_map(find_font_url)
+        }
+        Value::Array(arr) => arr.iter().find_map(find_font_url),
+        _ => None,
+    }
+}
+
+fn format_unknown_chars(chars: &[char]) -> String {
+    let mut out = String::new();
+    for (i, c) in chars.iter().enumerate() {
+        if i >= 20 {
+            out.push('…');
+            break;
+        }
+        out.push(*c);
+    }
+    out
+}
+
+fn decode_encrypted_answer_strings(
+    value: &mut Value,
+    decoder: &font_decode::FontDecodeMap,
+) -> Result<(), AppError> {
+    match value {
+        Value::String(s) => {
+            if s.to_ascii_lowercase().contains(ENCRYPTED_FONT_CLASS) {
+                let unknown = encode::encrypted_html_unknown_chars_with_decoder(s, Some(decoder));
+                if !unknown.is_empty() {
+                    return Err(AppError::ApiError(format!(
+                        "加密字体仍有未解码字符「{}」，已停止保存答案文件",
+                        format_unknown_chars(&unknown)
+                    )));
+                }
+                *s = encode::decode_html_text_with_decoder(s, Some(decoder));
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                decode_encrypted_answer_strings(item, decoder)?;
+            }
+        }
+        Value::Object(obj) => {
+            for item in obj.values_mut() {
+                decode_encrypted_answer_strings(item, decoder)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn decode_export_payload_before_save(mut data: Value) -> Result<Value, AppError> {
+    if !contains_encrypted_font_markup(&data) {
+        return Ok(data);
+    }
+
+    let font_url = find_font_url(&data).ok_or_else(|| {
+        AppError::ApiError("答案文件包含加密题干/选项，但响应中未返回字体地址，已停止保存".into())
+    })?;
+    let decoder = font_decode::build_decode_map(&font_url)
+        .await
+        .map_err(|e| {
+            AppError::ApiError(format!("构建加密字体解码表失败，已停止保存答案文件: {}", e))
+        })?;
+    log::info!("答案文件加密字体解码表构建成功，覆盖 {} 字", decoder.len());
+    decode_encrypted_answer_strings(&mut data, &decoder)?;
+    Ok(data)
 }
 
 /// 导出章节「测验/练习」（leaf_type=6）的答案。
@@ -516,6 +620,7 @@ pub async fn export_quiz_answers(
             "未获取到练习题，请确认该账号可查看该测验".into(),
         ));
     }
+    let resp = decode_export_payload_before_save(resp).await?;
 
     // 5. 落盘到 answer 目录；加 quiz_ 前缀避免与作业文件名冲突
     let app_data_dir = app_data_dir(&app)?;
@@ -563,6 +668,7 @@ pub async fn export_ppt_answers(
             "未获取到课件习题，请确认该课件含随堂练习且该账号可查看".into(),
         ));
     }
+    let resp = decode_export_payload_before_save(resp).await?;
 
     // 3. 落盘到 answer 目录；加 ppt_ 前缀避免与作业 / 测验文件名冲突
     let app_data_dir = app_data_dir(&app)?;
@@ -630,6 +736,7 @@ pub async fn export_exam_data(
 
     // 导出答案
     let answer_path = if let Some(answer_data) = client.get_all_answer(&work_id).await? {
+        let answer_data = decode_export_payload_before_save(answer_data).await?;
         let info = serde_json::json!({
             "exam_id": work_id,
             "exam_name": work_name,
@@ -647,7 +754,8 @@ pub async fn export_exam_data(
     };
 
     // 导出题目
-    let question_data = client.get_all_question(&work_id).await?;
+    let question_data =
+        decode_export_payload_before_save(client.get_all_question(&work_id).await?).await?;
     let question_path = if question_data["data"] != serde_json::json!({}) {
         let info = serde_json::json!({
             "exam_id": work_id,
@@ -976,6 +1084,52 @@ pub async fn get_exam_files(app: AppHandle) -> Result<Vec<Value>, AppError> {
         .collect();
 
     Ok(result)
+}
+
+fn delete_exam_data_files(app_data_dir: &Path, exam_id: &str) -> Result<usize, AppError> {
+    let exam_dir = json_store::get_exam_dir(app_data_dir)?;
+    let clean = sanitize::sanitize_filename(exam_id)?;
+    let mut deleted = 0usize;
+
+    for suffix in ["question", "answer"] {
+        let file_path = exam_dir.join(format!("{}_{}.json", clean, suffix));
+        if !file_path.starts_with(&exam_dir) {
+            return Err(AppError::InvalidInput(format!("非法考试 ID: {}", exam_id)));
+        }
+        match std::fs::remove_file(&file_path) {
+            Ok(()) => deleted += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Ok(deleted)
+}
+
+/// 删除单个本地考试数据文件组（题目 + 答案）。
+#[tauri::command]
+pub async fn delete_exam_file(app: AppHandle, exam_id: String) -> Result<Value, AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    let deleted = delete_exam_data_files(&app_data_dir, &exam_id)?;
+    Ok(serde_json::json!({ "deleted": deleted }))
+}
+
+/// 批量删除本地考试数据文件组：逐个删除、单个失败隔离。
+#[tauri::command]
+pub async fn delete_exam_files(app: AppHandle, exam_ids: Vec<String>) -> Result<Value, AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    let mut deleted = 0usize;
+    let mut failed: Vec<Value> = Vec::new();
+    for id in &exam_ids {
+        match delete_exam_data_files(&app_data_dir, id) {
+            Ok(n) => deleted += n,
+            Err(e) => failed.push(serde_json::json!({
+                "exam_id": id,
+                "reason": e.to_string(),
+            })),
+        }
+    }
+    Ok(serde_json::json!({ "deleted": deleted, "failed": failed }))
 }
 
 // ========== AI 自动答题 Commands ==========
