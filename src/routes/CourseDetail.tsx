@@ -404,7 +404,7 @@ export default function CourseDetail() {
           message="此操作会真实提交答案并写入成绩"
           description={
             <div>
-              测验「{quiz.name}」将被<strong>逐题自动提交</strong>（约每秒 1 题），提交后
+              测验「{quiz.name}」将被<strong>逐题自动提交</strong>（每小题提交前随机等待 6-9 秒），提交后
               <strong>无法撤销</strong>。优先使用本地题库，未命中时调用 AI 兜底。
               <br />
               请确认本测验<strong>允许重新作答</strong>，并知晓答错也会被提交。建议先用「试跑」预览。
@@ -501,7 +501,7 @@ export default function CourseDetail() {
           message="此操作会对所有选中测验真实提交答案并写入成绩"
           description={
             <div>
-              共 <strong>{list.length}</strong> 个测验将被<strong>逐题自动提交</strong>（约每秒 1 题），提交后
+              共 <strong>{list.length}</strong> 个测验将被<strong>逐题自动提交</strong>（每小题提交前随机等待 6-9 秒），提交后
               <strong>无法撤销</strong>。已提交过的小题会自动跳过；优先使用本地题库，未命中时调用 AI 兜底。
               建议先用「批量试跑」预览。
             </div>

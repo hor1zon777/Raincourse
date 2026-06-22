@@ -116,7 +116,7 @@ export default function StudyProgress() {
           message="开启后刷课遇到测验/练习会真实提交答案并写入成绩"
           description={
             <div>
-              刷课遇到<strong>测验/练习</strong>时将<strong>逐题自动提交</strong>（约每秒 1 题），提交后
+              刷课遇到<strong>测验/练习</strong>时将<strong>逐题自动提交</strong>（每小题提交前随机等待 6-9 秒），提交后
               <strong>无法撤销</strong>。已提交过的小题会自动跳过；优先使用本地题库，未命中时调用 AI 兜底。
               关闭时测验仍按现状跳过。
             </div>

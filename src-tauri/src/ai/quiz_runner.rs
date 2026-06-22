@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use rand::Rng;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::time::sleep;
@@ -26,6 +27,9 @@ use crate::api::client::RainClient;
 use crate::error::AppError;
 use crate::storage::json_store;
 use crate::util::json_str_or_num;
+
+const SUBMIT_DELAY_MIN_SECS: u64 = 6;
+const SUBMIT_DELAY_MAX_SECS: u64 = 9;
 
 /// 自动答题汇总结果（单测验命令返回 + emit: "quiz-answer-complete"）。
 #[derive(Clone, Serialize)]
@@ -114,6 +118,24 @@ fn count_answer_source(result: &mut QuizAnswerResult, source: Option<&str>) {
         Some("ai") => result.from_ai += 1,
         _ => {}
     }
+}
+
+fn random_submit_delay() -> Duration {
+    Duration::from_secs(rand::rng().random_range(SUBMIT_DELAY_MIN_SECS..=SUBMIT_DELAY_MAX_SECS))
+}
+
+async fn sleep_cancelable(duration: Duration, cancel: &Arc<AtomicBool>) -> bool {
+    const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+    let mut remaining = duration;
+    while !remaining.is_zero() {
+        if cancel.load(Ordering::Relaxed) {
+            return true;
+        }
+        let chunk = remaining.min(CANCEL_CHECK_INTERVAL);
+        sleep(chunk).await;
+        remaining = remaining.saturating_sub(chunk);
+    }
+    cancel.load(Ordering::Relaxed)
 }
 
 fn truncate_progress_text(s: &str) -> String {
@@ -233,7 +255,7 @@ async fn submit_answer(
 
 /// 章节测验自动答题核心：拉题 → 已答跳过 → 题库优先 / AI 兜底 →（非 dry_run 则）逐题提交。
 ///
-/// 全程串行，逐题回调进度；限速 ≥1 题/秒；单题失败/跳过隔离，不中断整体；
+/// 全程串行，逐题回调进度；真实提交前随机等待 6-9 秒；单题失败/跳过隔离，不中断整体；
 /// 通过 `cancel` 支持取消（**不**在此重置，由调用方负责）。
 /// `dry_run=true` 只生成并展示答案、**不提交**。
 pub async fn run_quiz_answer(
@@ -306,7 +328,11 @@ pub async fn run_quiz_answer(
                             leaf_id,
                             m.len()
                         );
-                        prep(on_progress, total, format!("解码表就绪，覆盖 {} 字", m.len()));
+                        prep(
+                            on_progress,
+                            total,
+                            format!("解码表就绪，覆盖 {} 字", m.len()),
+                        );
                         Some(m)
                     }
                     Err(e) => {
@@ -325,13 +351,6 @@ pub async fn run_quiz_answer(
     let mut result = QuizAnswerResult::new(total);
 
     for (i, p) in problems.iter().enumerate() {
-        // 限速 + 取消检查（除第一题外，每题前 sleep 1100ms ≈ ≤1 题/秒）
-        if i > 0 {
-            if cancel.load(Ordering::Relaxed) {
-                break;
-            }
-            sleep(Duration::from_millis(1100)).await;
-        }
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -371,7 +390,16 @@ pub async fn run_quiz_answer(
             continue;
         }
 
-        step(on_progress, idx, total, &problem_id, "running", None, None, None);
+        step(
+            on_progress,
+            idx,
+            total,
+            &problem_id,
+            "running",
+            None,
+            None,
+            None,
+        );
 
         // 答案来源：题库优先
         let mut answer: Option<Value> = None;
@@ -568,6 +596,21 @@ pub async fn run_quiz_answer(
                 Some(msg),
             );
             continue;
+        }
+
+        let submit_delay = random_submit_delay();
+        step(
+            on_progress,
+            idx,
+            total,
+            &problem_id,
+            "running",
+            source,
+            None,
+            Some(format!("等待 {} 秒后提交", submit_delay.as_secs())),
+        );
+        if sleep_cancelable(submit_delay, cancel).await {
+            break;
         }
 
         // 提交（含有限重试）：偶发限流 / 网络抖动 / CSRF 抖动下单次提交可能被拒
