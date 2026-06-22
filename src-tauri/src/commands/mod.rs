@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -93,6 +94,37 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
     app.path()
         .app_data_dir()
         .map_err(|e| AppError::Config(format!("无法获取应用数据目录: {}", e)))
+}
+
+fn open_folder(path: &Path) -> Result<(), AppError> {
+    if !path.exists() {
+        std::fs::create_dir_all(path)?;
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut cmd = Command::new("explorer");
+        cmd.arg(path);
+        cmd
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut cmd = Command::new("open");
+        cmd.arg(path);
+        cmd
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(path);
+        cmd
+    };
+
+    cmd.spawn()
+        .map_err(|e| AppError::General(format!("打开文件夹失败: {}", e)))?;
+    Ok(())
 }
 
 /// 把 JSON 值取成 f64，兼容「数字或数字字符串」；无法解析返回 0.0。
@@ -792,6 +824,26 @@ pub async fn get_answer_file_content(app: AppHandle, file_name: String) -> Resul
     let app_data_dir = app_data_dir(&app)?;
     let dir = json_store::get_answer_dir(&app_data_dir)?;
     json_store::load_json(&dir, &file_name)
+}
+
+/// 打开应用内答案文件目录。
+#[tauri::command]
+pub async fn open_answer_folder(app: AppHandle) -> Result<String, AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    let dir = json_store::get_answer_dir(&app_data_dir)?;
+    open_folder(&dir)?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// 打开系统下载目录，答案打包导出文件会下载到这里。
+#[tauri::command]
+pub async fn open_download_folder(app: AppHandle) -> Result<String, AppError> {
+    let dir = app
+        .path()
+        .download_dir()
+        .map_err(|e| AppError::Config(format!("无法获取下载目录: {}", e)))?;
+    open_folder(&dir)?;
+    Ok(dir.to_string_lossy().to_string())
 }
 
 #[derive(Debug, Deserialize)]

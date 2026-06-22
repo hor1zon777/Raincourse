@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
-import { Button, Card, Empty, Popconfirm, Space, Spin, Table, message } from 'antd';
+import { Alert, Button, Card, Empty, Popconfirm, Space, Spin, Table, message } from 'antd';
 import {
   DeleteOutlined,
   ExportOutlined,
   EyeOutlined,
   FileTextOutlined,
+  FolderOpenOutlined,
   ImportOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
@@ -86,6 +87,8 @@ export default function AnswerFiles() {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [openingFolder, setOpeningFolder] = useState<'answer' | 'download' | null>(null);
+  const [lastExportName, setLastExportName] = useState<string | null>(null);
   // 选中的文件（以真实 file_name 为键）
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   // 批量删除进行中
@@ -132,12 +135,27 @@ export default function AnswerFiles() {
       const data = await invoke<AnswerExportPackage>('export_answer_files', {
         fileNames,
       });
-      downloadJson(data, exportFileName());
-      message.success(`已导出 ${data.count} 个答案文件`);
+      const fileName = exportFileName();
+      downloadJson(data, fileName);
+      setLastExportName(fileName);
+      message.success(`已导出 ${data.count} 个答案文件：${fileName}`);
     } catch (e) {
       message.error(`导出失败: ${normalizeError(e).message}`);
     } finally {
       setExporting(false);
+    }
+  };
+
+  const handleOpenFolder = async (type: 'answer' | 'download') => {
+    setOpeningFolder(type);
+    try {
+      const command = type === 'answer' ? 'open_answer_folder' : 'open_download_folder';
+      const path = await invoke<string>(command);
+      message.success(`已打开文件夹: ${path}`);
+    } catch (e) {
+      message.error(`打开文件夹失败: ${normalizeError(e).message}`);
+    } finally {
+      setOpeningFolder(null);
     }
   };
 
@@ -343,6 +361,38 @@ export default function AnswerFiles() {
             <Button icon={<ReloadOutlined />} onClick={fetchFiles} loading={loading}>
               刷新
             </Button>
+          </Space>
+        }
+      />
+
+      <Alert
+        type={lastExportName ? 'success' : 'info'}
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={lastExportName ? `最近导出：${lastExportName}` : '答案文件位置'}
+        description={
+          <Space direction="vertical" size={8}>
+            <span>
+              本页展示应用内答案目录中的文件；“导出选中”会生成一个打包 JSON，并保存到系统下载目录。
+            </span>
+            <Space wrap>
+              <Button
+                size="small"
+                icon={<FolderOpenOutlined />}
+                loading={openingFolder === 'answer'}
+                onClick={() => handleOpenFolder('answer')}
+              >
+                打开答案目录
+              </Button>
+              <Button
+                size="small"
+                icon={<FolderOpenOutlined />}
+                loading={openingFolder === 'download'}
+                onClick={() => handleOpenFolder('download')}
+              >
+                打开下载目录
+              </Button>
+            </Space>
           </Space>
         }
       />

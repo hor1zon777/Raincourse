@@ -1,6 +1,6 @@
 [package]
 name = "raincourse-v2"
-version = "2.1.2"
+version = "2.1.3"
 description = "雨课堂助手 - Tauri v2"
 authors = ["aglorice"]
 edition = "2021"
