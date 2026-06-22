@@ -17,7 +17,7 @@ use crate::study::{self, ChapterTask};
 use crate::util::{json_str_or_num, sanitize};
 use crate::{excel, ws};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ai::config::{self as ai_config, AiConfig};
 use crate::ai::quiz_runner::{self, QuizAnswerResult};
@@ -792,6 +792,85 @@ pub async fn get_answer_file_content(app: AppHandle, file_name: String) -> Resul
     let app_data_dir = app_data_dir(&app)?;
     let dir = json_store::get_answer_dir(&app_data_dir)?;
     json_store::load_json(&dir, &file_name)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportAnswerFile {
+    #[serde(rename = "fileName")]
+    file_name: String,
+    data: Value,
+}
+
+fn validate_answer_file_payload(data: &Value) -> Result<(), AppError> {
+    let obj = data
+        .as_object()
+        .ok_or_else(|| AppError::InvalidInput("答案文件必须是 JSON 对象".into()))?;
+    if !obj.contains_key("answer") || !obj.get("info").is_some_and(|v| v.is_object()) {
+        return Err(AppError::InvalidInput(
+            "不是有效的答案文件，缺少 answer 或 info".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 将选中的答案文件打包为单个 JSON 导出包，由前端下载为一个文件。
+#[tauri::command]
+pub async fn export_answer_files(
+    app: AppHandle,
+    file_names: Vec<String>,
+) -> Result<Value, AppError> {
+    if file_names.is_empty() {
+        return Err(AppError::InvalidInput("请选择要导出的答案文件".into()));
+    }
+
+    let app_data_dir = app_data_dir(&app)?;
+    let dir = json_store::get_answer_dir(&app_data_dir)?;
+    let mut files = Vec::new();
+    for name in &file_names {
+        let data = json_store::load_json(&dir, name)?;
+        validate_answer_file_payload(&data)?;
+        files.push(serde_json::json!({
+            "file_name": name,
+            "data": data,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "type": "raincourse-answer-export",
+        "version": 1,
+        "exported_at": chrono::Utc::now().to_rfc3339(),
+        "count": files.len(),
+        "files": files,
+    }))
+}
+
+/// 导入答案文件。支持前端拆包后的单个或多个 `{ fileName, data }` 项。
+#[tauri::command]
+pub async fn import_answer_files(
+    app: AppHandle,
+    files: Vec<ImportAnswerFile>,
+) -> Result<Value, AppError> {
+    if files.is_empty() {
+        return Err(AppError::InvalidInput("请选择要导入的答案文件".into()));
+    }
+
+    let app_data_dir = app_data_dir(&app)?;
+    let mut imported = 0usize;
+    let mut failed: Vec<Value> = Vec::new();
+
+    for item in files {
+        match validate_answer_file_payload(&item.data)
+            .and_then(|_| json_store::save_answer_file(&app_data_dir, &item.file_name, &item.data))
+        {
+            Ok(_) => imported += 1,
+            Err(e) => failed.push(serde_json::json!({
+                "file_name": item.file_name,
+                "reason": e.to_string(),
+            })),
+        }
+    }
+
+    Ok(serde_json::json!({ "imported": imported, "failed": failed }))
 }
 
 /// 删除单个答案文件（按 list_answer_files 返回的真实 `file_name`）。

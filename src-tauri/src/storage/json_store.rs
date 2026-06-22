@@ -60,6 +60,25 @@ pub fn load_json(dir: &Path, filename: &str) -> Result<Value, AppError> {
     Ok(data)
 }
 
+/// 保存已经包含 `{ answer, info }` 的答案 JSON 文件。
+pub fn save_answer_file(
+    app_data_dir: &Path,
+    file_name: &str,
+    data: &Value,
+) -> Result<String, AppError> {
+    let dir = get_answer_dir(app_data_dir)?;
+    let stem = file_name.strip_suffix(".json").unwrap_or(file_name);
+    let clean = sanitize::sanitize_filename(stem)?;
+    let file_path = dir.join(format!("{}.json", clean));
+    if !file_path.starts_with(&dir) {
+        return Err(AppError::InvalidInput(format!("非法文件名: {}", file_name)));
+    }
+
+    let json = serde_json::to_string_pretty(data)?;
+    std::fs::write(&file_path, json)?;
+    Ok(format!("{}.json", clean))
+}
+
 /// 列出答案文件。每条返回文件内的 `info`，并注入真实磁盘文件名 `file_name`，
 /// 供前端精确定位删除（answer 目录下文件名格式不一：`{id}.json` / `quiz_*.json` / `ppt_*.json`）。
 pub fn list_answer_files(app_data_dir: &Path) -> Vec<Value> {

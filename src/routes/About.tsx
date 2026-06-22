@@ -50,7 +50,7 @@ export default function About() {
         <Card title={<><InfoCircleOutlined /> 应用信息</>}>
           <Descriptions column={1} bordered size="small">
             <Descriptions.Item label="应用名称">雨课堂助手</Descriptions.Item>
-            <Descriptions.Item label="版本">v2.0.0</Descriptions.Item>
+            <Descriptions.Item label="版本">v2.1.2</Descriptions.Item>
             <Descriptions.Item label="技术栈">
               <Space wrap>
                 <Tag color="orange">Rust</Tag>
