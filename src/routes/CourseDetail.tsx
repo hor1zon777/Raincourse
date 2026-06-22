@@ -30,6 +30,40 @@ interface ChapterTask {
   type_str: string;
 }
 
+type BatchQuizItemStatus = 'pending' | 'running' | 'done' | 'failed' | 'stopped';
+
+interface BatchQuizItem {
+  id: number;
+  name: string;
+  status: BatchQuizItemStatus;
+  dryRun: boolean;
+  result?: QuizAnswerResult;
+  message?: string;
+}
+
+const batchQuizStatusMeta = (status: BatchQuizItemStatus) => {
+  switch (status) {
+    case 'pending':
+      return { color: 'default', label: '等待中' };
+    case 'running':
+      return { color: 'processing', label: '进行中' };
+    case 'done':
+      return { color: 'success', label: '已完成' };
+    case 'failed':
+      return { color: 'error', label: '失败' };
+    case 'stopped':
+      return { color: 'warning', label: '已停止' };
+  }
+};
+
+const formatBatchQuizItemSummary = (item: BatchQuizItem) => {
+  if (!item.result) return item.message ?? null;
+  const { result } = item;
+  return item.dryRun
+    ? `可作答 ${result.from_local + result.from_ai}/${result.total}（题库 ${result.from_local}、AI ${result.from_ai}），已答跳过 ${result.already_answered}`
+    : `提交 ${result.submitted}（正确 ${result.correct}），已答跳过 ${result.already_answered}，失败 ${result.failed}，跳过 ${result.skipped}`;
+};
+
 const LEAF_TYPE_OPTIONS = [
   { value: 0, label: '视频', color: 'blue' },
   { value: 3, label: '公告', color: 'cyan' },
@@ -103,8 +137,8 @@ export default function CourseDetail() {
   // ===== 批量自动答题 =====
   const [batchQuizActive, setBatchQuizActive] = useState(false); // 批量进行中
   const [batchQuizProgress, setBatchQuizProgress] = useState<{ done: number; total: number; name: string } | null>(null);
-  // 已完成测验的汇总（批量模式下抽屉展示）
-  const [batchSummaries, setBatchSummaries] = useState<{ name: string; result: QuizAnswerResult; dryRun: boolean }[]>([]);
+  // 批量模式下的测验列表：开始前一次性列出，执行中逐项更新状态与汇总。
+  const [batchQuizItems, setBatchQuizItems] = useState<BatchQuizItem[]>([]);
   // 批量停止标志：在「测验之间」中断；单测验内停止仍走 stop_quiz_auto_answer
   const batchQuizStopRef = useRef(false);
 
@@ -360,7 +394,7 @@ export default function CourseDetail() {
     setQuizResult(null);
     setPrepMessage(null);
     setBatchQuizActive(false);
-    setBatchSummaries([]);
+    setBatchQuizItems([]);
     setBatchQuizProgress(null);
     setQuizDrawerOpen(true);
     setAnswering(true);
@@ -424,7 +458,14 @@ export default function CourseDetail() {
     if (!id || answering || list.length === 0) return;
     batchQuizStopRef.current = false;
     setBatchQuizActive(true);
-    setBatchSummaries([]);
+    setBatchQuizItems(
+      list.map((quiz) => ({
+        id: quiz.id,
+        name: quiz.name,
+        status: 'pending',
+        dryRun,
+      })),
+    );
     setQuizResult(null);
     setQuizDryRun(dryRun);
     setQuizDrawerOpen(true);
@@ -439,15 +480,45 @@ export default function CourseDetail() {
         setQuizEvents([]);
         setPrepMessage(null);
         setBatchQuizProgress({ done, total, name: quiz.name });
+        setBatchQuizItems((prev) =>
+          prev.map((item) =>
+            item.id === quiz.id ? { ...item, status: 'running', message: undefined } : item,
+          ),
+        );
         try {
           const res = await invoke<QuizAnswerResult>('start_quiz_auto_answer', {
             courseId: id,
             leafId: String(quiz.id),
             dryRun,
           });
-          setBatchSummaries((prev) => [...prev, { name: quiz.name, result: res, dryRun }]);
+          setBatchQuizItems((prev) =>
+            prev.map((item) =>
+              item.id === quiz.id
+                ? {
+                    ...item,
+                    status: batchQuizStopRef.current ? 'stopped' : 'done',
+                    result: res,
+                    message: undefined,
+                  }
+                : item,
+            ),
+          );
         } catch (e) {
-          message.error(`「${quiz.name}」答题失败: ${normalizeError(e).message}`);
+          const err = normalizeError(e).message;
+          if (!batchQuizStopRef.current) {
+            message.error(`「${quiz.name}」答题失败: ${err}`);
+          }
+          setBatchQuizItems((prev) =>
+            prev.map((item) =>
+              item.id === quiz.id
+                ? {
+                    ...item,
+                    status: batchQuizStopRef.current ? 'stopped' : 'failed',
+                    message: batchQuizStopRef.current ? '已停止' : err,
+                  }
+                : item,
+            ),
+          );
         }
         done += 1;
         setBatchQuizProgress({ done, total, name: quiz.name });
@@ -458,6 +529,13 @@ export default function CourseDetail() {
       }
     } finally {
       const stopped = batchQuizStopRef.current;
+      if (stopped) {
+        setBatchQuizItems((prev) =>
+          prev.map((item) =>
+            item.status === 'pending' ? { ...item, status: 'stopped', message: '未执行' } : item,
+          ),
+        );
+      }
       setAnswering(false);
       currentQuizLeafRef.current = null;
       // 批量后刷新进度与得分
@@ -1278,22 +1356,33 @@ export default function CourseDetail() {
             }
           />
         )}
-        {batchQuizActive && batchSummaries.length > 0 && (
+        {batchQuizActive && batchQuizItems.length > 0 && (
           <List
             size="small"
             style={{ marginTop: 12 }}
-            header={<Typography.Text strong>已完成测验汇总</Typography.Text>}
-            dataSource={batchSummaries}
-            renderItem={(s) => (
-              <List.Item>
-                <Typography.Text style={{ fontSize: 12 }}>
-                  <Typography.Text strong>{s.name}</Typography.Text>：
-                  {s.dryRun
-                    ? `可作答 ${s.result.from_local + s.result.from_ai}/${s.result.total}（题库 ${s.result.from_local}、AI ${s.result.from_ai}），已答跳过 ${s.result.already_answered}`
-                    : `提交 ${s.result.submitted}（正确 ${s.result.correct}），已答跳过 ${s.result.already_answered}，失败 ${s.result.failed}，跳过 ${s.result.skipped}`}
-                </Typography.Text>
-              </List.Item>
-            )}
+            header={<Typography.Text strong>批量测验列表</Typography.Text>}
+            dataSource={batchQuizItems}
+            renderItem={(item) => {
+              const status = batchQuizStatusMeta(item.status);
+              const summary = formatBatchQuizItemSummary(item);
+              return (
+                <List.Item>
+                  <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                    <Space size="small" wrap>
+                      <Tag color={status.color}>{status.label}</Tag>
+                      <Typography.Text strong style={{ fontSize: 12 }}>
+                        {item.name}
+                      </Typography.Text>
+                    </Space>
+                    {summary && (
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {summary}
+                      </Typography.Text>
+                    )}
+                  </Space>
+                </List.Item>
+              );
+            }}
           />
         )}
       </Drawer>
