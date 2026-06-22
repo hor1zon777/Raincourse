@@ -678,6 +678,14 @@ pub async fn get_answer_files(app: AppHandle) -> Result<Vec<Value>, AppError> {
     Ok(json_store::list_answer_files(&app_data_dir))
 }
 
+/// 读取单个本地答案文件内容（按 list_answer_files 返回的真实 `file_name`）。
+#[tauri::command]
+pub async fn get_answer_file_content(app: AppHandle, file_name: String) -> Result<Value, AppError> {
+    let app_data_dir = app_data_dir(&app)?;
+    let dir = json_store::get_answer_dir(&app_data_dir)?;
+    json_store::load_json(&dir, &file_name)
+}
+
 /// 删除单个答案文件（按 list_answer_files 返回的真实 `file_name`）。
 #[tauri::command]
 pub async fn delete_answer_file(app: AppHandle, file_name: String) -> Result<(), AppError> {

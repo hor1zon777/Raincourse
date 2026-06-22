@@ -36,6 +36,7 @@ pub fn run() {
             commands::export_ppt_answers,
             commands::export_exam_data,
             commands::get_answer_files,
+            commands::get_answer_file_content,
             commands::delete_answer_file,
             commands::delete_answer_files,
             commands::start_auto_study,
