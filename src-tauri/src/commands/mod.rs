@@ -486,7 +486,10 @@ pub async fn export_work_answers(
     // 4. 获取答案
     let answers = client.get_all_answer(&work_id).await?;
     if let Some(answer_data) = answers {
+        let question_data =
+            decode_export_payload_before_save(client.get_all_question(&work_id).await?).await?;
         let answer_data = decode_export_payload_before_save(answer_data).await?;
+        let answer_data = enrich_exam_answer_with_questions(answer_data, &question_data);
         let app_data_dir = app_data_dir(&app)?;
         let dir = json_store::get_answer_dir(&app_data_dir)?;
         let info = serde_json::json!({
@@ -605,6 +608,124 @@ async fn decode_export_payload_before_save(mut data: Value) -> Result<Value, App
     log::info!("答案文件加密字体解码表构建成功，覆盖 {} 字", decoder.len());
     decode_encrypted_answer_strings(&mut data, &decoder)?;
     Ok(data)
+}
+
+const QUESTION_PATHS: &[&[&str]] = &[
+    &["exam", "data", "problems"],
+    &["data", "problems"],
+    &["problems"],
+];
+
+const ANSWER_RESULT_PATHS: &[&[&str]] = &[
+    &["exam", "data", "problem_results"],
+    &["data", "problem_results"],
+    &["problem_results"],
+];
+
+fn array_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Vec<Value>> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    current.as_array()
+}
+
+fn array_mut_at_path<'a>(value: &'a mut Value, path: &[&str]) -> Option<&'a mut Vec<Value>> {
+    let mut current = value;
+    for segment in path {
+        current = current.get_mut(*segment)?;
+    }
+    current.as_array_mut()
+}
+
+fn find_array_at_paths<'a>(value: &'a Value, paths: &[&[&str]]) -> Option<&'a Vec<Value>> {
+    paths.iter().find_map(|path| array_at_path(value, path))
+}
+
+fn find_array_mut_at_paths<'a>(
+    value: &'a mut Value,
+    paths: &[&[&str]],
+) -> Option<&'a mut Vec<Value>> {
+    let selected = paths
+        .iter()
+        .find(|path| array_at_path(value, path).is_some())
+        .copied()?;
+    array_mut_at_path(value, selected)
+}
+
+fn json_id_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn problem_id_from(value: &Value) -> Option<String> {
+    ["problem_id", "ProblemID", "problemId", "id"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(json_id_string))
+        .or_else(|| {
+            value.get("content").and_then(|content| {
+                ["problem_id", "ProblemID", "problemId", "id"]
+                    .iter()
+                    .find_map(|key| content.get(*key).and_then(json_id_string))
+            })
+        })
+}
+
+fn copy_question_field(target: &mut serde_json::Map<String, Value>, question: &Value, key: &str) {
+    if target.contains_key(key) {
+        return;
+    }
+    if let Some(value) = question
+        .get(key)
+        .or_else(|| question.get("content")?.get(key))
+    {
+        target.insert(key.to_string(), value.clone());
+    }
+}
+
+fn enrich_exam_answer_with_questions(mut answer_data: Value, question_data: &Value) -> Value {
+    let Some(questions) = find_array_at_paths(question_data, QUESTION_PATHS) else {
+        return answer_data;
+    };
+
+    let question_by_id: HashMap<String, &Value> = questions
+        .iter()
+        .filter_map(|question| problem_id_from(question).map(|id| (id, question)))
+        .collect();
+
+    let Some(results) = find_array_mut_at_paths(&mut answer_data, ANSWER_RESULT_PATHS) else {
+        return answer_data;
+    };
+
+    for result in results {
+        let Some(id) = problem_id_from(result) else {
+            continue;
+        };
+        let Some(question) = question_by_id.get(&id).copied() else {
+            continue;
+        };
+        if let Some(obj) = result.as_object_mut() {
+            obj.entry("problem".to_string())
+                .or_insert_with(|| question.clone());
+            for key in [
+                "Body",
+                "Options",
+                "TypeText",
+                "Type",
+                "ProblemID",
+                "Remark",
+                "Score",
+                "score",
+            ] {
+                copy_question_field(obj, question, key);
+            }
+        }
+    }
+
+    answer_data
 }
 
 /// 导出章节「测验/练习」（leaf_type=6）的答案。
@@ -766,9 +887,14 @@ pub async fn export_exam_data(
     let app_data_dir = app_data_dir(&app)?;
     let exam_dir = json_store::get_exam_dir(&app_data_dir)?;
 
+    // 题目用于单独落盘，也会合并进答案结果，便于答案文件预览和分享。
+    let question_data =
+        decode_export_payload_before_save(client.get_all_question(&work_id).await?).await?;
+
     // 导出答案
     let answer_path = if let Some(answer_data) = client.get_all_answer(&work_id).await? {
         let answer_data = decode_export_payload_before_save(answer_data).await?;
+        let answer_data = enrich_exam_answer_with_questions(answer_data, &question_data);
         let info = serde_json::json!({
             "exam_id": work_id,
             "exam_name": work_name,
@@ -786,8 +912,6 @@ pub async fn export_exam_data(
     };
 
     // 导出题目
-    let question_data =
-        decode_export_payload_before_save(client.get_all_question(&work_id).await?).await?;
     let question_path = if question_data["data"] != serde_json::json!({}) {
         let info = serde_json::json!({
             "exam_id": work_id,
